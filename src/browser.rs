@@ -75,5 +75,9 @@ pub fn detect() -> Result<Vec<Browser>> {
         }
     }
 
+    browsers.retain(|b| {
+        !b.exe_path.to_lowercase().ends_with("iexplore.exe")
+    });
+
     Ok(browsers)
 }

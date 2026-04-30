@@ -30,11 +30,7 @@ fn main() -> Result<()> {
             ui::show_picker(url.to_string())?;
         }
         _ => {
-            eprintln!("Usage:");
-            eprintln!("  brows --register      既定ブラウザとして登録");
-            eprintln!("  brows --unregister    登録解除");
-            eprintln!("  brows --list          検出済みブラウザ一覧");
-            eprintln!("  brows <url>           ブラウザ選択UIを開く");
+            ui::show_settings()?;
         }
     }
 
