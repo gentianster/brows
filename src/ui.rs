@@ -369,13 +369,19 @@ impl eframe::App for SettingsApp {
                             self.registered = true;
                             self.status_msg = Some("登録しました。設定 → アプリ → 既定のアプリ から brows を選択してください。".into());
                         }
-                        Err(e) => self.status_msg = Some(format!("登録失敗: {} (管理者権限で実行してください)", e)),
+                        Err(_) => {
+                            registry::elevate("--register");
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 }
                 if ui.add_enabled(self.registered, egui::Button::new("登録解除")).clicked() {
                     match registry::unregister() {
                         Ok(_) => { self.registered = false; self.status_msg = Some("登録を解除しました。".into()); }
-                        Err(e) => self.status_msg = Some(format!("解除失敗: {}", e)),
+                        Err(_) => {
+                            registry::elevate("--unregister");
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 }
             });

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::os::windows::ffi::OsStrExt;
 use winreg::enums::*;
 use winreg::RegKey;
 
@@ -55,6 +56,33 @@ pub fn register() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// UAC 昇格して brows.exe <arg> を再実行する
+pub fn elevate(arg: &str) {
+    use std::ffi::OsStr;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let Ok(exe) = std::env::current_exe() else { return };
+    let to_wide = |s: &OsStr| -> Vec<u16> {
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    };
+    let verb  = to_wide(OsStr::new("runas"));
+    let file  = to_wide(exe.as_os_str());
+    let param = to_wide(OsStr::new(arg));
+
+    unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(param.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
 }
 
 /// 登録を解除する
