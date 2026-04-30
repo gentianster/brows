@@ -370,6 +370,7 @@ struct SettingsApp {
     new_browser: String,
     icons: HashMap<String, egui::TextureHandle>,
     icons_loaded: bool,
+    rule_search: String,
 }
 
 impl SettingsApp {
@@ -384,6 +385,7 @@ impl SettingsApp {
             browsers, groups, registered, status_msg: None, updater, config,
             new_pattern: String::new(), new_browser,
             icons: HashMap::new(), icons_loaded: false,
+            rule_search: String::new(),
         }
     }
 
@@ -422,33 +424,33 @@ impl eframe::App for SettingsApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(12.0);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.heading("brows");
                 ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak().small());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new("ブラウザ選択ツール for Windows 11").weak().small());
+                });
             });
-            ui.label(egui::RichText::new("ブラウザ選択ツール for Windows 11").weak());
-            ui.add_space(16.0);
+            ui.add_space(4.0);
             ui.separator();
-            ui.add_space(8.0);
+            ui.add_space(6.0);
 
+            // 登録状態 + ボタン + 更新状態を1行に
             ui.horizontal(|ui| {
                 let (icon, label) = if self.registered {
-                    ("✔", egui::RichText::new("既定ブラウザとして登録済み").color(egui::Color32::from_rgb(100, 200, 100)))
+                    ("✔", egui::RichText::new("登録済み").color(egui::Color32::from_rgb(100, 200, 100)).small())
                 } else {
-                    ("✖", egui::RichText::new("未登録").color(egui::Color32::from_rgb(200, 100, 100)))
+                    ("✖", egui::RichText::new("未登録").color(egui::Color32::from_rgb(200, 100, 100)).small())
                 };
                 ui.label(icon);
                 ui.label(label);
-            });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.registered, egui::Button::new("既定ブラウザとして登録")).clicked() {
+                ui.add_space(4.0);
+                if ui.add_enabled(!self.registered, egui::Button::new("登録").small()).clicked() {
                     match registry::register() {
                         Ok(_) => {
                             self.registered = true;
-                            self.status_msg = Some("登録しました。設定 → アプリ → 既定のアプリ から brows を選択してください。".into());
+                            self.status_msg = Some("設定 → アプリ → 既定のアプリ から brows を選択してください。".into());
                         }
                         Err(_) => {
                             registry::elevate("--register");
@@ -456,7 +458,7 @@ impl eframe::App for SettingsApp {
                         }
                     }
                 }
-                if ui.add_enabled(self.registered, egui::Button::new("登録解除")).clicked() {
+                if ui.add_enabled(self.registered, egui::Button::new("解除").small()).clicked() {
                     match registry::unregister() {
                         Ok(_) => { self.registered = false; self.status_msg = Some("登録を解除しました。".into()); }
                         Err(_) => {
@@ -465,81 +467,100 @@ impl eframe::App for SettingsApp {
                         }
                     }
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let update_state = self.updater.state.lock().unwrap().clone();
+                    match &update_state {
+                        UpdateState::UpToDate => {
+                            ui.label(egui::RichText::new("最新バージョン").weak().small());
+                        }
+                        UpdateState::Available(tag) => {
+                            if ui.small_button("ダウンロード").clicked() {
+                                self.updater.download_and_restart();
+                            }
+                            ui.label(egui::RichText::new(format!("{} 公開中", tag))
+                                .color(egui::Color32::from_rgb(80, 180, 80)).small());
+                        }
+                        UpdateState::Downloading => {
+                            ui.label(egui::RichText::new("DL中...").weak().small());
+                            ctx.request_repaint();
+                        }
+                        UpdateState::ReadyToRestart => {
+                            if ui.small_button("再起動").clicked() { Updater::restart(); }
+                            ui.label(egui::RichText::new("DL完了").color(egui::Color32::from_rgb(80, 180, 80)).small());
+                        }
+                        UpdateState::Error(e) => {
+                            ui.label(egui::RichText::new(format!("更新エラー: {}", e))
+                                .color(egui::Color32::from_rgb(200, 80, 80)).small());
+                        }
+                    }
+                });
             });
 
             if let Some(msg) = &self.status_msg {
-                ui.add_space(6.0);
                 ui.label(egui::RichText::new(msg).weak().small());
             }
 
-            ui.add_space(16.0);
+            ui.add_space(6.0);
             ui.separator();
             ui.add_space(8.0);
-
-            let update_state = self.updater.state.lock().unwrap().clone();
-            match &update_state {
-                UpdateState::UpToDate => {
-                    ui.label(egui::RichText::new("最新バージョンです").weak().small());
+            ui.horizontal(|ui| {
+                ui.label("URL ルール");
+                if ui.small_button("設定ファイルを開く").clicked() {
+                    use std::os::windows::process::CommandExt;
+                    let path = crate::config::config_path();
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if !path.exists() { let _ = std::fs::write(&path, ""); }
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/c", "start", "", &path.to_string_lossy()])
+                        .creation_flags(0x08000000)
+                        .spawn();
                 }
-                UpdateState::Available(tag) => {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("新バージョン {} があります", tag))
-                            .color(egui::Color32::from_rgb(80, 180, 80)));
-                        if ui.button("ダウンロード & 再起動").clicked() {
-                            self.updater.download_and_restart();
-                        }
-                    });
-                }
-                UpdateState::Downloading => {
-                    ui.label(egui::RichText::new("ダウンロード中...").weak().small());
-                    ctx.request_repaint();
-                }
-                UpdateState::ReadyToRestart => {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("ダウンロード完了").color(egui::Color32::from_rgb(80, 180, 80)));
-                        if ui.button("今すぐ再起動").clicked() {
-                            Updater::restart();
-                        }
-                    });
-                }
-                UpdateState::Error(e) => {
-                    ui.label(egui::RichText::new(format!("更新エラー: {}", e))
-                        .color(egui::Color32::from_rgb(200, 80, 80)).small());
-                }
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
-            ui.label("URL ルール");
+            });
             ui.add_space(4.0);
 
             let browser_names = self.browser_names();
             let mut delete_idx: Option<usize> = None;
-            for (i, rule) in self.config.rules.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    if let Some(tex) = self.icons.get(&rule.browser) {
-                        ui.painter().image(tex.id(), icon_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE);
-                    }
-                    ui.label(egui::RichText::new(&rule.pattern).monospace());
-                    ui.label(egui::RichText::new("→").weak());
-                    ui.label(&rule.browser);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if draw_x_button(ui).clicked() {
-                            delete_idx = Some(i);
+            if self.config.rules.is_empty() {
+                ui.label(egui::RichText::new("ルールなし").weak().small());
+            } else {
+                ui.add(egui::TextEdit::singleline(&mut self.rule_search)
+                    .hint_text("検索...")
+                    .desired_width(f32::INFINITY));
+                ui.add_space(2.0);
+                let q = self.rule_search.to_lowercase();
+                egui::ScrollArea::vertical()
+                    .id_source("rules_scroll")
+                    .max_height(120.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (i, rule) in self.config.rules.iter().enumerate()
+                            .filter(|(_, r)| q.is_empty()
+                                || r.pattern.to_lowercase().contains(&q)
+                                || r.browser.to_lowercase().contains(&q))
+                        {
+                            ui.horizontal(|ui| {
+                                if draw_x_button(ui).clicked() {
+                                    delete_idx = Some(i);
+                                }
+                                let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                                if let Some(tex) = self.icons.get(&rule.browser) {
+                                    ui.painter().image(tex.id(), icon_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE);
+                                }
+                                ui.label(egui::RichText::new(&rule.pattern).monospace());
+                                ui.label(egui::RichText::new("→").weak());
+                                ui.label(&rule.browser);
+                            });
                         }
                     });
-                });
             }
             if let Some(i) = delete_idx {
                 self.config.rules.remove(i);
                 let _ = self.config.save();
-            }
-            if self.config.rules.is_empty() {
-                ui.label(egui::RichText::new("ルールなし").weak().small());
             }
 
             ui.add_space(4.0);
