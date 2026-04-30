@@ -312,9 +312,14 @@ impl eframe::App for PickerApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(tag) = &self.config.update_available {
-                        ui.label(egui::RichText::new(format!("⬆ {} 公開中", tag))
-                            .color(egui::Color32::from_rgb(80, 180, 80))
-                            .small());
+                        if crate::updater::is_newer(tag) {
+                            ui.label(egui::RichText::new(format!("⬆ {} 公開中", tag))
+                                .color(egui::Color32::from_rgb(80, 180, 80))
+                                .small());
+                        } else {
+                            ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .weak().small());
+                        }
                     } else {
                         ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .weak().small());

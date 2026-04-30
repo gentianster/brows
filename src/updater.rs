@@ -157,7 +157,7 @@ fn do_download(tag: &str) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err("ダウンロード失敗".into()) }
 }
 
-fn is_newer(tag: &str) -> bool {
+pub fn is_newer(tag: &str) -> bool {
     let parse = |s: &str| -> Vec<u32> {
         s.trim_start_matches('v').split('.').filter_map(|p| p.parse().ok()).collect()
     };
