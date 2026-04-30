@@ -89,21 +89,14 @@ pub fn elevate(arg: &str) {
 pub fn unregister() -> Result<()> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
 
-    // RegisteredApplications から削除
-    if let Ok(reg_apps) = hklm.open_subkey_with_flags(
-        "SOFTWARE\\RegisteredApplications",
-        KEY_WRITE,
-    ) {
+    // 書き込み権限チェック（失敗時は Err を返して UAC 昇格を促す）
+    hklm.open_subkey_with_flags("SOFTWARE\\Clients\\StartMenuInternet", KEY_WRITE)?;
+
+    if let Ok(reg_apps) = hklm.open_subkey_with_flags("SOFTWARE\\RegisteredApplications", KEY_WRITE) {
         let _ = reg_apps.delete_value(APP_NAME);
     }
+    let _ = hklm.delete_subkey_all(format!("SOFTWARE\\Clients\\StartMenuInternet\\{}", APP_NAME));
 
-    // StartMenuInternet から削除
-    let _ = hklm.delete_subkey_all(format!(
-        "SOFTWARE\\Clients\\StartMenuInternet\\{}",
-        APP_NAME
-    ));
-
-    // URLハンドラ削除
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let _ = hkcr.delete_subkey_all(format!("{}URL", APP_NAME));
 

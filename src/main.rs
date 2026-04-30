@@ -18,12 +18,11 @@ fn main() -> Result<()> {
     match args.get(1).map(|s| s.as_str()) {
         Some("--register") => {
             registry::register()?;
-            println!("brows を既定ブラウザとして登録しました。");
-            println!("設定 → アプリ → 既定のアプリ から brows を既定ブラウザに設定してください。");
+            relaunch_settings();
         }
         Some("--unregister") => {
             registry::unregister()?;
-            println!("登録を解除しました。");
+            relaunch_settings();
         }
         Some("--list") => {
             let browsers = browser::detect()?;
@@ -41,4 +40,13 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn relaunch_settings() {
+    use std::os::windows::process::CommandExt;
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe)
+            .creation_flags(0x00000008) // DETACHED_PROCESS
+            .spawn();
+    }
 }
