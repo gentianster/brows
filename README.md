@@ -9,9 +9,10 @@ A lightweight browser selector that lets you pick Chrome, Edge, Brave, Vivaldi, 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2011-blue)](https://github.com/gentianster/brows)
 
-<img width="448" height="415" alt="image" src="https://github.com/user-attachments/assets/b6dc38c2-1266-4bce-9740-96b717296c30" />
+<img width="490" height="557" alt="image" src="https://github.com/user-attachments/assets/ac159a43-d622-4e22-9997-947f5b7f6153" />
 
-<img width="419" height="343" alt="image" src="https://github.com/user-attachments/assets/9be684ce-90f1-45d7-85f9-fb211928b176" />
+<img width="399" height="327" alt="image" src="https://github.com/user-attachments/assets/dff140a7-86d2-4863-9f5a-80fc130ee1fe" />
+
 
 ## Features
 
