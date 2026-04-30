@@ -1,6 +1,7 @@
 use crate::browser::{self, Browser, BrowserGroup};
 use crate::config::Config;
 use crate::registry;
+use crate::updater::{UpdateState, Updater};
 use anyhow::Result;
 use eframe::egui;
 
@@ -322,12 +323,13 @@ struct SettingsApp {
     browsers: Vec<Browser>,
     registered: bool,
     status_msg: Option<String>,
+    updater: Updater,
 }
 
 impl SettingsApp {
     fn new(browsers: Vec<Browser>) -> Self {
         let registered = is_registered();
-        Self { browsers, registered, status_msg: None }
+        Self { browsers, registered, status_msg: None, updater: Updater::start() }
     }
 }
 
@@ -384,6 +386,45 @@ impl eframe::App for SettingsApp {
             }
 
             ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            let update_state = self.updater.state.lock().unwrap().clone();
+            match &update_state {
+                UpdateState::Checking => {
+                    ui.label(egui::RichText::new("アップデート確認中...").weak().small());
+                }
+                UpdateState::UpToDate => {
+                    ui.label(egui::RichText::new("最新バージョンです").weak().small());
+                }
+                UpdateState::Available(tag) => {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("新バージョン {} があります", tag))
+                            .color(egui::Color32::from_rgb(80, 180, 80)));
+                        if ui.button("ダウンロード & 再起動").clicked() {
+                            self.updater.download_and_restart();
+                        }
+                    });
+                }
+                UpdateState::Downloading => {
+                    ui.label(egui::RichText::new("ダウンロード中...").weak().small());
+                    ctx.request_repaint();
+                }
+                UpdateState::ReadyToRestart => {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("ダウンロード完了").color(egui::Color32::from_rgb(80, 180, 80)));
+                        if ui.button("今すぐ再起動").clicked() {
+                            Updater::restart();
+                        }
+                    });
+                }
+                UpdateState::Error(e) => {
+                    ui.label(egui::RichText::new(format!("更新エラー: {}", e))
+                        .color(egui::Color32::from_rgb(200, 80, 80)).small());
+                }
+            }
+
+            ui.add_space(8.0);
             ui.separator();
             ui.add_space(8.0);
             ui.label("検出済みブラウザ");

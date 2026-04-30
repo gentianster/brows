@@ -5,6 +5,7 @@ mod config;
 mod icon;
 mod registry;
 mod ui;
+mod updater;
 
 use anyhow::Result;
 use std::env;
