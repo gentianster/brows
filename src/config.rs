@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// デフォルトブラウザ（未選択時のフォールバック）
     pub default_browser: Option<String>,
-    /// URLルール: マッチしたURLを自動で特定ブラウザで開く
     pub rules: Vec<Rule>,
+    /// ピッカーに表示するブラウザの順序（exe パスのリスト）
+    #[serde(default)]
+    pub browser_order: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
