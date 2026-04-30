@@ -1,8 +1,9 @@
 # brows
 
 Windows 11 向けブラウザ選択ツール。リンクを開くたびに、インストール済みブラウザの一覧からどれで開くか選べます。
+<img width="448" height="415" alt="image" src="https://github.com/user-attachments/assets/b6dc38c2-1266-4bce-9740-96b717296c30" />
 
-![picker](https://github.com/gentianster/brows/assets/picker.png)
+<img width="419" height="343" alt="image" src="https://github.com/user-attachments/assets/9be684ce-90f1-45d7-85f9-fb211928b176" />
 
 ## 特徴
 
