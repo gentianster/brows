@@ -65,16 +65,33 @@ struct PickerApp {
     url: String,
     browsers: Vec<Browser>,
     selected: Option<usize>,
+    icons: Vec<Option<egui::TextureHandle>>,
+    icons_loaded: bool,
 }
 
 impl PickerApp {
     fn new(url: String, browsers: Vec<Browser>) -> Self {
-        Self { url, browsers, selected: None }
+        let n = browsers.len();
+        Self { url, browsers, selected: None, icons: vec![None; n], icons_loaded: false }
     }
 }
 
 impl eframe::App for PickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 初回フレームでアイコンをロード
+        if !self.icons_loaded {
+            self.icons_loaded = true;
+            for (i, b) in self.browsers.iter().enumerate() {
+                if let Some(img) = crate::icon::load(&b.exe_path) {
+                    self.icons[i] = Some(ctx.load_texture(
+                        &b.name,
+                        img,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(8.0);
 
@@ -89,12 +106,41 @@ impl eframe::App for PickerApp {
             ui.label("どのブラウザで開きますか？");
             ui.add_space(8.0);
 
+            const ROW_H: f32 = 40.0;
+            const ICON_SIZE: f32 = 22.0;
+
             for (i, browser) in self.browsers.iter().enumerate() {
-                let btn = ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::Button::new(&browser.name),
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), ROW_H),
+                    egui::Sense::click(),
                 );
-                if btn.clicked() {
+                let visuals = ui.style().interact(&response);
+                ui.painter().rect(rect, 4.0, visuals.bg_fill, visuals.bg_stroke);
+
+                // アイコン
+                if let Some(Some(tex)) = self.icons.get(i) {
+                    let icon_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x + 10.0, rect.center().y - ICON_SIZE / 2.0),
+                        egui::vec2(ICON_SIZE, ICON_SIZE),
+                    );
+                    ui.painter().image(
+                        tex.id(),
+                        icon_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // ブラウザ名（中央揃え）
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &browser.name,
+                    egui::FontId::proportional(14.0),
+                    visuals.text_color(),
+                );
+
+                if response.clicked() {
                     self.selected = Some(i);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }

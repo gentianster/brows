@@ -17,6 +17,20 @@ impl Browser {
     }
 }
 
+/// `"C:\path\to\browser.exe" "%1"` 形式のコマンド文字列から exe パスだけを取り出す
+fn extract_exe(cmd: &str) -> String {
+    let cmd = cmd.trim();
+    if cmd.starts_with('"') {
+        // `"C:\path\browser.exe" "%1"` → `C:\path\browser.exe`
+        cmd[1..].splitn(2, '"').next().unwrap_or("").to_string()
+    } else if let Some(pos) = cmd.to_lowercase().find(".exe") {
+        // `C:\Program Files\browser.exe` (引用符なし) → `.exe` で切る
+        cmd[..pos + 4].to_string()
+    } else {
+        cmd.splitn(2, ' ').next().unwrap_or(cmd).to_string()
+    }
+}
+
 /// キーの既定値 → Capabilities\ApplicationName → キー名、の順で表示名を解決する
 fn display_name(browser_key: &RegKey, fallback: &str) -> String {
     browser_key
@@ -46,7 +60,7 @@ pub fn detect() -> Result<Vec<Browser>> {
         if let Ok(browser_key) = clients_key.open_subkey(&key_name) {
             if let Ok(cmd_key) = browser_key.open_subkey("shell\\open\\command") {
                 let exe_path: String = cmd_key.get_value("").unwrap_or_default();
-                let exe_path = exe_path.trim_matches('"').to_string();
+                let exe_path = extract_exe(&exe_path);
                 if !exe_path.is_empty() {
                     let name = display_name(&browser_key, &key_name);
                     browsers.push(Browser { name, exe_path });
@@ -75,8 +89,16 @@ pub fn detect() -> Result<Vec<Browser>> {
         }
     }
 
+    let self_exe_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+
     browsers.retain(|b| {
+        let path = std::path::Path::new(&b.exe_path);
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().to_lowercase());
         !b.exe_path.to_lowercase().ends_with("iexplore.exe")
+            && self_exe_name.as_deref().map_or(true, |s| file_name.as_deref() != Some(s))
     });
 
     Ok(browsers)

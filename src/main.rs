@@ -1,5 +1,8 @@
+#![windows_subsystem = "windows"]
+
 mod browser;
 mod config;
+mod icon;
 mod registry;
 mod ui;
 

@@ -21,10 +21,16 @@ windows = { version = "0.56", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
 ] }
 
 # Windowsでコンソールウィンドウを非表示にする（UI起動時）
 # 登録コマンド時はコンソールが必要なので、サブコマンドで切り替える
+[build-dependencies]
+winres = "0.1"
+
 [profile.release]
 opt-level = "s"  # サイズ優先
 strip = true
