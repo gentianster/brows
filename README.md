@@ -1,21 +1,45 @@
-# brows
+# brows — Windows 11 Browser Picker
 
-Windows 11 向けブラウザ選択ツール。リンクを開くたびに、インストール済みブラウザの一覧からどれで開くか選べます。
+**Choose which browser opens every link on Windows 11.**  
+A lightweight browser selector that lets you pick Chrome, Edge, Brave, Vivaldi, Firefox, or any installed browser each time you click a link — with per-URL rules and Chromium profile support.
+
+[![Latest Release](https://img.shields.io/github/v/release/gentianster/brows)](https://github.com/gentianster/brows/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2011-blue)](https://github.com/gentianster/brows)
+
+> Windows 11 向けブラウザ選択ツール。リンクを開くたびに、インストール済みブラウザの一覧からどれで開くか選べます。
 
 <img width="448" height="415" alt="image" src="https://github.com/user-attachments/assets/b6dc38c2-1266-4bce-9740-96b717296c30" />
 
 <img width="419" height="343" alt="image" src="https://github.com/user-attachments/assets/9be684ce-90f1-45d7-85f9-fb211928b176" />
 
-## 特徴
+## Features / 特徴
+
+- **Browser picker dialog** — choose Chrome, Edge, Brave, Vivaldi, Firefox, or any installed browser on every link click
+- **Chromium profile support** — select a specific Chrome / Edge / Brave / Vivaldi profile per link
+- **URL rules** — automatically open matching URLs in a specific browser without showing the dialog
+- **Drag-to-reorder** — rearrange browser list order and it's saved automatically
+- **Auto-update** — checks GitHub Releases once a day; one-click download & restart from the settings screen
+- **Tiny & native** — single `.exe`, no installer, no runtime dependencies
+
+---
 
 - インストール済みブラウザを自動検出（Chrome / Edge / Vivaldi / Brave など）
 - Chrome / Edge など Chromium 系ブラウザはプロファイルごとに選択可能
 - ブラウザの表示順をドラッグで変更・保存
-- URL パターンに応じて自動でブラウザを選択するルールを GUI で設定（設定画面から追加・削除）
+- URL パターンに応じて自動でブラウザを選択するルールを GUI で設定
 - 1日1回バックグラウンドでアップデートを確認。新バージョンがあればピッカーと設定画面に通知
 - 設定画面からワンクリックでダウンロード＆再起動
 
-## インストール
+## Install / インストール
+
+1. Download `brows.exe` from [Releases](https://github.com/gentianster/brows/releases/latest)
+2. Place it anywhere (e.g. `C:\Tools\brows.exe`)
+3. Double-click `brows.exe` to open the settings screen
+4. Click **「登録」** — a UAC prompt will appear to register brows as a browser handler
+5. Go to **Windows Settings → Apps → Default apps → brows** and set it as your default browser
+
+---
 
 1. [Releases](https://github.com/gentianster/brows/releases/latest) から `brows.exe` をダウンロード
 2. 任意のフォルダに配置
@@ -23,42 +47,42 @@ Windows 11 向けブラウザ選択ツール。リンクを開くたびに、イ
 4. **「登録」** をクリック（UAC プロンプトが表示されます）
 5. Windows 設定 → アプリ → 既定のアプリ → **brows** を既定のブラウザに設定
 
-## 使い方
+## Usage / 使い方
+
+Once registered, clicking any link in any application will show the browser picker dialog.
 
 登録後は、任意のアプリからリンクを開くと自動的にブラウザ選択ダイアログが表示されます。
 
-### ブラウザの順序変更
+### URL Rules / URL ルール設定
 
-ダイアログ上でブラウザ行をドラッグして並び順を変更できます。順序は自動保存されます。
+Set up rules so that URLs matching a pattern automatically open in a specific browser — no dialog shown.  
+Configure from the **「URL ルール」** section in the settings screen. Chromium profiles are selectable by display name.
 
-### URL ルール設定
+URLパターンにマッチしたリンクはダイアログを表示せず、直接指定のブラウザで開きます。設定画面の「URL ルール」セクションから追加・削除できます。
 
-設定画面の「URL ルール」セクションから、URL パターンに応じたブラウザの自動選択を設定できます。パターンにマッチした URL はブラウザ選択ダイアログを表示せず、直接指定のブラウザで開きます。
+Settings are saved to `%APPDATA%\brows\config.toml`.
 
-Chrome などのプロファイルも選択可能です（プロファイルの表示名で指定）。
+### Auto-Update / アップデート
 
-設定は `%APPDATA%\brows\config.toml` に保存されます。「設定ファイルを開く」ボタンから直接編集することもできます。
+brows checks GitHub Releases in the background once per day. When a new version is available:
 
-### アップデート
+- **Picker screen**: version name shown in the bottom-right
+- **Settings screen**: a **「ダウンロード」** button appears — click to update and restart automatically
 
-起動時にバックグラウンドで GitHub Releases を確認します（1日1回）。新バージョンがある場合：
+## Build / ビルド
 
-- **ピッカー画面**：右下にバージョン名を表示
-- **設定画面**：「ダウンロード」ボタンが表示され、クリックで自動更新＆再起動
-
-## ビルド
+Requires only the [Rust toolchain](https://rustup.rs/). No external tools needed.
 
 ```bash
 cargo build --release
+# → target/release/brows.exe
 ```
 
-`target/release/brows.exe` が生成されます。Rust ツールチェインのみ必要で、外部ツール不要です。
-
-## ライセンス
-
-[MIT License](LICENSE)
-
-## 要件
+## Requirements / 要件
 
 - Windows 11
-- 既定ブラウザ登録には管理者権限が必要
+- Administrator rights required for registering as default browser handler
+
+## License / ライセンス
+
+[MIT License](LICENSE)
