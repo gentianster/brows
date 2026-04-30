@@ -1,4 +1,7 @@
+use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const REPO: &str = "gentianster/brows";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -69,7 +72,10 @@ impl Updater {
             old = current_exe.display(),
         );
         let _ = std::fs::write(&bat, script);
-        let _ = std::process::Command::new("cmd").args(["/c", &bat.to_string_lossy()]).spawn();
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", &bat.to_string_lossy()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
         std::process::exit(0);
     }
 }
@@ -79,6 +85,7 @@ fn fetch_latest_tag() -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
     let output = std::process::Command::new("curl")
         .args(["-s", "--connect-timeout", "5", "-A", "brows-updater", &url])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
     let body = String::from_utf8(output.stdout).ok()?;
@@ -94,6 +101,7 @@ fn do_download(tag: &str) -> Result<(), String> {
     let dest = std::env::temp_dir().join("brows_update.exe");
     let status = std::process::Command::new("curl")
         .args(["-sL", "--connect-timeout", "30", "-o", &dest.to_string_lossy(), &url])
+        .creation_flags(CREATE_NO_WINDOW)
         .status()
         .map_err(|e| e.to_string())?;
 
