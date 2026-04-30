@@ -3,6 +3,7 @@
 mod browser;
 mod config;
 mod icon;
+mod lang;
 mod registry;
 mod ui;
 mod updater;

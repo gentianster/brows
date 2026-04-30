@@ -41,14 +41,12 @@ pub fn show_picker(url: String) -> Result<()> {
     let mut groups = browser::detect_grouped()?;
     let config = Config::load()?;
 
-    // 保存された順序で並べ替え
     if !config.browser_order.is_empty() {
         groups.sort_by_key(|g| {
             config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX)
         });
     }
 
-    // ルール・デフォルトブラウザのチェック
     for g in &groups {
         for b in &g.browsers {
             if config.match_rule(&url).map_or(false, |n| n == b.name) {
@@ -93,7 +91,6 @@ struct PickerApp {
     selected: Option<(usize, usize)>,
     icons: Vec<Option<egui::TextureHandle>>,
     icons_loaded: bool,
-    // ドラッグ状態
     drag_src: Option<usize>,
     drag_tgt: usize,
     row_rects: Vec<egui::Rect>,
@@ -143,6 +140,8 @@ fn draw_drop_line(ui: &egui::Ui, x_min: f32, x_max: f32, y: f32) {
 
 impl eframe::App for PickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let lang = crate::lang::get();
+
         if !self.icons_loaded {
             self.icons_loaded = true;
             for (i, g) in self.groups.iter().enumerate() {
@@ -152,7 +151,6 @@ impl eframe::App for PickerApp {
             }
         }
 
-        // 前フレームの rect からドロップ先を計算
         if self.drag_src.is_some() {
             if let Some(py) = ctx.input(|i| i.pointer.hover_pos()).map(|p| p.y) {
                 let src = self.drag_src.unwrap();
@@ -163,7 +161,6 @@ impl eframe::App for PickerApp {
                         break;
                     }
                 }
-                // src の前後は実質移動なしなので現在位置のまま
                 if tgt == src || tgt == src + 1 { tgt = src; }
                 self.drag_tgt = tgt;
             }
@@ -176,7 +173,7 @@ impl eframe::App for PickerApp {
             } else { self.url.clone() };
             ui.label(egui::RichText::new(&display_url).weak().small());
             ui.add_space(12.0);
-            ui.label("どのブラウザで開きますか？");
+            ui.label(lang.which_browser);
             ui.add_space(8.0);
 
             const ROW_H: f32 = 40.0;
@@ -193,14 +190,12 @@ impl eframe::App for PickerApp {
                 let is_expandable = self.groups[gi].browsers.len() > 1;
                 let is_drag_src = self.drag_src == Some(gi);
 
-                // ドロップ先インジケーター（このアイテムの上）
                 if is_dragging && self.drag_tgt == gi && self.drag_tgt != self.drag_src.unwrap_or(usize::MAX) {
                     let y = ui.cursor().min.y + 1.0;
                     draw_drop_line(ui, x_min, x_min + w, y);
                     ui.add_space(4.0);
                 }
 
-                // ── グループ行 ──
                 let (rect, _) = ui.allocate_exact_size(
                     egui::vec2(w, ROW_H), egui::Sense::hover(),
                 );
@@ -215,7 +210,6 @@ impl eframe::App for PickerApp {
                 } else { visuals.bg_fill };
                 ui.painter().rect(rect, 4.0, bg, visuals.bg_stroke);
 
-                // アイコン
                 if let Some(Some(tex)) = self.icons.get(gi) {
                     let icon_rect = egui::Rect::from_min_size(
                         egui::pos2(rect.min.x + 10.0, rect.center().y - ICON_SIZE / 2.0),
@@ -226,11 +220,9 @@ impl eframe::App for PickerApp {
                         egui::Color32::WHITE);
                 }
 
-                // ブラウザ名
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                     &self.groups[gi].name, egui::FontId::proportional(14.0), visuals.text_color());
 
-                // 展開三角 or ドラッグハンドル
                 if is_expandable {
                     let cx = rect.max.x - 16.0;
                     let cy = rect.center().y;
@@ -242,7 +234,6 @@ impl eframe::App for PickerApp {
                     ui.painter().add(egui::Shape::convex_polygon(pts, visuals.text_color(), egui::Stroke::NONE));
                 }
 
-                // イベント処理
                 if resp.drag_started() {
                     self.drag_src = Some(gi);
                     self.drag_tgt = gi;
@@ -255,7 +246,6 @@ impl eframe::App for PickerApp {
                             let item = self.groups.remove(src);
                             let insert = if tgt > src { tgt - 1 } else { tgt };
                             self.groups.insert(insert, item);
-                            // アイコンも同様に並べ替え
                             let icon = self.icons.remove(src);
                             let icon_insert = if tgt > src { tgt - 1 } else { tgt };
                             self.icons.insert(icon_insert, icon);
@@ -273,7 +263,6 @@ impl eframe::App for PickerApp {
                     }
                 }
 
-                // ── プロファイル行（展開時） ──
                 if is_expanded && !drop_performed {
                     for (pi, browser) in self.groups[gi].browsers.iter().enumerate() {
                         let (prect, presp) = ui.allocate_exact_size(
@@ -295,7 +284,6 @@ impl eframe::App for PickerApp {
                 }
             }
 
-            // リスト末尾へのドロップインジケーター
             let last = self.groups.len();
             if is_dragging && self.drag_tgt == last && self.drag_src != Some(last.saturating_sub(1)) {
                 let y = ui.cursor().min.y + 1.0;
@@ -307,13 +295,13 @@ impl eframe::App for PickerApp {
             ui.separator();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("キャンセル").clicked() {
+                if ui.button(lang.cancel).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(tag) = &self.config.update_available {
                         if crate::updater::is_newer(tag) {
-                            ui.label(egui::RichText::new(format!("⬆ {} 公開中", tag))
+                            ui.label(egui::RichText::new(format!("⬆ {} {}", tag, lang.update_suffix))
                                 .color(egui::Color32::from_rgb(80, 180, 80))
                                 .small());
                         } else {
@@ -340,12 +328,13 @@ impl eframe::App for PickerApp {
 // ─── 設定画面 ────────────────────────────────────────────────────
 
 pub fn show_settings() -> Result<()> {
+    let lang = crate::lang::get();
     let browsers = browser::detect().unwrap_or_default();
     let groups = browser::detect_grouped().unwrap_or_default();
     let config = Config::load().unwrap_or_default();
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("brows - 設定")
+        .with_title(lang.window_title_settings)
         .with_inner_size([480.0, 520.0])
         .with_resizable(true);
     if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
@@ -415,6 +404,8 @@ fn is_registered() -> bool {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let lang = crate::lang::get();
+
         if !self.icons_loaded {
             self.icons_loaded = true;
             for g in &self.groups {
@@ -434,28 +425,27 @@ impl eframe::App for SettingsApp {
                 ui.heading("brows");
                 ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak().small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new("ブラウザ選択ツール for Windows 11").weak().small());
+                    ui.label(egui::RichText::new(lang.subtitle).weak().small());
                 });
             });
             ui.add_space(4.0);
             ui.separator();
             ui.add_space(6.0);
 
-            // 登録状態 + ボタン + 更新状態を1行に
             ui.horizontal(|ui| {
                 let (icon, label) = if self.registered {
-                    ("✔", egui::RichText::new("登録済み").color(egui::Color32::from_rgb(100, 200, 100)).small())
+                    ("✔", egui::RichText::new(lang.registered).color(egui::Color32::from_rgb(100, 200, 100)).small())
                 } else {
-                    ("✖", egui::RichText::new("未登録").color(egui::Color32::from_rgb(200, 100, 100)).small())
+                    ("✖", egui::RichText::new(lang.not_registered).color(egui::Color32::from_rgb(200, 100, 100)).small())
                 };
                 ui.label(icon);
                 ui.label(label);
                 ui.add_space(4.0);
-                if ui.add_enabled(!self.registered, egui::Button::new("登録").small()).clicked() {
+                if ui.add_enabled(!self.registered, egui::Button::new(lang.btn_register).small()).clicked() {
                     match registry::register() {
                         Ok(_) => {
                             self.registered = true;
-                            self.status_msg = Some("設定 → アプリ → 既定のアプリ から brows を選択してください。".into());
+                            self.status_msg = Some(lang.register_success_hint.into());
                         }
                         Err(_) => {
                             registry::elevate("--register");
@@ -463,9 +453,12 @@ impl eframe::App for SettingsApp {
                         }
                     }
                 }
-                if ui.add_enabled(self.registered, egui::Button::new("解除").small()).clicked() {
+                if ui.add_enabled(self.registered, egui::Button::new(lang.btn_unregister).small()).clicked() {
                     match registry::unregister() {
-                        Ok(_) => { self.registered = false; self.status_msg = Some("登録を解除しました。".into()); }
+                        Ok(_) => {
+                            self.registered = false;
+                            self.status_msg = Some(lang.unregister_success.into());
+                        }
                         Err(_) => {
                             registry::elevate("--unregister");
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -477,25 +470,26 @@ impl eframe::App for SettingsApp {
                     let update_state = self.updater.state.lock().unwrap().clone();
                     match &update_state {
                         UpdateState::UpToDate => {
-                            ui.label(egui::RichText::new("最新バージョン").weak().small());
+                            ui.label(egui::RichText::new(lang.up_to_date).weak().small());
                         }
                         UpdateState::Available(tag) => {
-                            if ui.small_button("ダウンロード").clicked() {
+                            if ui.small_button(lang.btn_download).clicked() {
                                 self.updater.download_and_restart();
                             }
-                            ui.label(egui::RichText::new(format!("{} 公開中", tag))
+                            ui.label(egui::RichText::new(format!("{} {}", tag, lang.update_suffix))
                                 .color(egui::Color32::from_rgb(80, 180, 80)).small());
                         }
                         UpdateState::Downloading => {
-                            ui.label(egui::RichText::new("DL中...").weak().small());
+                            ui.label(egui::RichText::new(lang.downloading).weak().small());
                             ctx.request_repaint();
                         }
                         UpdateState::ReadyToRestart => {
-                            if ui.small_button("再起動").clicked() { Updater::restart(); }
-                            ui.label(egui::RichText::new("DL完了").color(egui::Color32::from_rgb(80, 180, 80)).small());
+                            if ui.small_button(lang.btn_restart).clicked() { Updater::restart(); }
+                            ui.label(egui::RichText::new(lang.dl_complete)
+                                .color(egui::Color32::from_rgb(80, 180, 80)).small());
                         }
                         UpdateState::Error(e) => {
-                            ui.label(egui::RichText::new(format!("更新エラー: {}", e))
+                            ui.label(egui::RichText::new(format!("{}{}", lang.update_error_prefix, e))
                                 .color(egui::Color32::from_rgb(200, 80, 80)).small());
                         }
                     }
@@ -510,8 +504,8 @@ impl eframe::App for SettingsApp {
             ui.separator();
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label("URL ルール");
-                if ui.small_button("設定ファイルを開く").clicked() {
+                ui.label(lang.section_url_rules);
+                if ui.small_button(lang.btn_open_config).clicked() {
                     use std::os::windows::process::CommandExt;
                     let path = crate::config::config_path();
                     if let Some(parent) = path.parent() {
@@ -529,10 +523,10 @@ impl eframe::App for SettingsApp {
             let browser_names = self.browser_names();
             let mut delete_idx: Option<usize> = None;
             if self.config.rules.is_empty() {
-                ui.label(egui::RichText::new("ルールなし").weak().small());
+                ui.label(egui::RichText::new(lang.no_rules).weak().small());
             } else {
                 ui.add(egui::TextEdit::singleline(&mut self.rule_search)
-                    .hint_text("検索...")
+                    .hint_text(lang.search_hint)
                     .desired_width(f32::INFINITY));
                 ui.add_space(2.0);
                 let q = self.rule_search.to_lowercase();
@@ -571,7 +565,7 @@ impl eframe::App for SettingsApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.new_pattern)
-                    .hint_text("パターン (例: github.com)")
+                    .hint_text(lang.pattern_hint)
                     .desired_width(160.0));
                 egui::ComboBox::from_id_source("rule_browser")
                     .selected_text(&self.new_browser)
@@ -594,7 +588,7 @@ impl eframe::App for SettingsApp {
                         }
                     });
                 let can_add = !self.new_pattern.is_empty() && !self.new_browser.is_empty();
-                if ui.add_enabled(can_add, egui::Button::new("追加")).clicked() {
+                if ui.add_enabled(can_add, egui::Button::new(lang.btn_add)).clicked() {
                     self.config.rules.push(Rule {
                         pattern: self.new_pattern.clone(),
                         browser: self.new_browser.clone(),
@@ -607,11 +601,11 @@ impl eframe::App for SettingsApp {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(8.0);
-            ui.label("検出済みブラウザ");
+            ui.label(lang.section_browsers);
             ui.add_space(4.0);
 
             if self.browsers.is_empty() {
-                ui.label(egui::RichText::new("ブラウザが見つかりませんでした").weak());
+                ui.label(egui::RichText::new(lang.no_browsers).weak());
             } else {
                 for b in &self.browsers {
                     ui.horizontal(|ui| {
