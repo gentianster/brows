@@ -6,9 +6,12 @@ use std::path::PathBuf;
 pub struct Config {
     pub default_browser: Option<String>,
     pub rules: Vec<Rule>,
-    /// ピッカーに表示するブラウザの順序（exe パスのリスト）
     #[serde(default)]
     pub browser_order: Vec<String>,
+    #[serde(default)]
+    pub last_update_check: Option<u64>, // Unix timestamp (seconds)
+    #[serde(default)]
+    pub update_available: Option<String>, // tag name e.g. "v0.2.0"
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -2,15 +2,14 @@ use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 const REPO: &str = "gentianster/brows";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
+const CHECK_INTERVAL_SECS: u64 = 86400; // 1日
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateState {
-    Checking,
     UpToDate,
-    Available(String), // 新バージョンのタグ名 (e.g. "v0.2.0")
+    Available(String),
     Downloading,
     ReadyToRestart,
     Error(String),
@@ -22,20 +21,13 @@ pub struct Updater {
 }
 
 impl Updater {
-    pub fn start() -> Self {
-        let state = Arc::new(Mutex::new(UpdateState::Checking));
-        let state_clone = state.clone();
-
-        std::thread::spawn(move || {
-            let result = match fetch_latest_tag() {
-                Some(tag) if is_newer(&tag) => UpdateState::Available(tag),
-                Some(_) => UpdateState::UpToDate,
-                None => UpdateState::UpToDate, // API 失敗時は黙って無視
-            };
-            *state_clone.lock().unwrap() = result;
-        });
-
-        Self { state }
+    /// config から既知の更新情報を読んで初期化（設定画面用）
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        let state = match &config.update_available {
+            Some(tag) if is_newer(tag) => UpdateState::Available(tag.clone()),
+            _ => UpdateState::UpToDate,
+        };
+        Self { state: Arc::new(Mutex::new(state)) }
     }
 
     pub fn download_and_restart(&self) {
@@ -55,7 +47,6 @@ impl Updater {
     }
 
     pub fn restart() {
-        // バッチファイルで: 現 exe を .old にリネームし新 exe を配置して再起動
         let current_exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(_) => return,
@@ -80,7 +71,42 @@ impl Updater {
     }
 }
 
-/// GitHub Releases API から最新タグを取得
+/// 起動時に呼ぶ。CHECK_INTERVAL_SECS 経過していればバックグラウンドでチェックして config に保存する
+pub fn check_if_due() {
+    let config = match crate::config::Config::load() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if !is_due(config.last_update_check) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let now = unix_now();
+        let mut cfg = crate::config::Config::load().unwrap_or_default();
+        cfg.last_update_check = Some(now);
+        match fetch_latest_tag() {
+            Some(tag) if is_newer(&tag) => cfg.update_available = Some(tag),
+            Some(_) => cfg.update_available = None,
+            None => {} // API 失敗時は前回の結果を維持
+        }
+        let _ = cfg.save();
+    });
+}
+
+fn is_due(last: Option<u64>) -> bool {
+    match last {
+        None => true,
+        Some(t) => unix_now().saturating_sub(t) >= CHECK_INTERVAL_SECS,
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn fetch_latest_tag() -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
     let output = std::process::Command::new("curl")
@@ -92,7 +118,6 @@ fn fetch_latest_tag() -> Option<String> {
     json_str(&body, "tag_name")
 }
 
-/// 新バージョン exe を %TEMP%\brows_update.exe にダウンロード
 fn do_download(tag: &str) -> Result<(), String> {
     let url = format!(
         "https://github.com/{}/releases/download/{}/brows.exe",
@@ -108,7 +133,6 @@ fn do_download(tag: &str) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err("ダウンロード失敗".into()) }
 }
 
-/// 文字列バージョン比較（"v0.2.0" > "0.1.0" → true）
 fn is_newer(tag: &str) -> bool {
     let parse = |s: &str| -> Vec<u32> {
         s.trim_start_matches('v').split('.').filter_map(|p| p.parse().ok()).collect()

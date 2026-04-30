@@ -13,6 +13,8 @@ use std::env;
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
+    updater::check_if_due();
+
     match args.get(1).map(|s| s.as_str()) {
         Some("--register") => {
             registry::register()?;

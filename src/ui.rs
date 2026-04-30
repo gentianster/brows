@@ -297,6 +297,7 @@ impl eframe::App for PickerApp {
 
 pub fn show_settings() -> Result<()> {
     let browsers = browser::detect().unwrap_or_default();
+    let config = Config::load().unwrap_or_default();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -309,9 +310,9 @@ pub fn show_settings() -> Result<()> {
     eframe::run_native(
         "brows settings",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             setup_fonts(cc);
-            Box::new(SettingsApp::new(browsers))
+            Box::new(SettingsApp::new(browsers, &config))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -327,9 +328,9 @@ struct SettingsApp {
 }
 
 impl SettingsApp {
-    fn new(browsers: Vec<Browser>) -> Self {
+    fn new(browsers: Vec<Browser>, config: &Config) -> Self {
         let registered = is_registered();
-        Self { browsers, registered, status_msg: None, updater: Updater::start() }
+        Self { browsers, registered, status_msg: None, updater: Updater::from_config(config) }
     }
 }
 
@@ -397,9 +398,6 @@ impl eframe::App for SettingsApp {
 
             let update_state = self.updater.state.lock().unwrap().clone();
             match &update_state {
-                UpdateState::Checking => {
-                    ui.label(egui::RichText::new("アップデート確認中...").weak().small());
-                }
                 UpdateState::UpToDate => {
                     ui.label(egui::RichText::new("最新バージョンです").weak().small());
                 }
