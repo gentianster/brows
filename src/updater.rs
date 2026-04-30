@@ -21,13 +21,37 @@ pub struct Updater {
 }
 
 impl Updater {
-    /// config から既知の更新情報を読んで初期化（設定画面用）
+    /// config から既知の更新情報を読んで初期化。チェック期限が来ていれば
+    /// バックグラウンドで API を叩いて state と config を両方更新する。
     pub fn from_config(config: &crate::config::Config) -> Self {
-        let state = match &config.update_available {
+        let initial = match &config.update_available {
             Some(tag) if is_newer(tag) => UpdateState::Available(tag.clone()),
             _ => UpdateState::UpToDate,
         };
-        Self { state: Arc::new(Mutex::new(state)) }
+        let state = Arc::new(Mutex::new(initial));
+
+        if is_due(config.last_update_check) {
+            let state_clone = state.clone();
+            std::thread::spawn(move || {
+                let now = unix_now();
+                let mut cfg = crate::config::Config::load().unwrap_or_default();
+                cfg.last_update_check = Some(now);
+                match fetch_latest_tag() {
+                    Some(tag) if is_newer(&tag) => {
+                        cfg.update_available = Some(tag.clone());
+                        *state_clone.lock().unwrap() = UpdateState::Available(tag);
+                    }
+                    Some(_) => {
+                        cfg.update_available = None;
+                        *state_clone.lock().unwrap() = UpdateState::UpToDate;
+                    }
+                    None => {}
+                }
+                let _ = cfg.save();
+            });
+        }
+
+        Self { state }
     }
 
     pub fn download_and_restart(&self) {

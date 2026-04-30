@@ -13,8 +13,6 @@ use std::env;
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    updater::check_if_due();
-
     match args.get(1).map(|s| s.as_str()) {
         Some("--register") => {
             registry::register()?;
@@ -31,7 +29,7 @@ fn main() -> Result<()> {
             }
         }
         Some(url) if url.starts_with("http") => {
-            // 既定ブラウザとして呼び出された場合
+            updater::check_if_due(); // ピッカー時は設定画面を開かないので config だけ更新
             ui::show_picker(url.to_string())?;
         }
         _ => {
