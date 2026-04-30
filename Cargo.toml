@@ -1,0 +1,30 @@
+[package]
+name = "brows"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "brows"
+path = "src/main.rs"
+
+[dependencies]
+winreg = "0.52"
+eframe = "0.27"
+egui = "0.27"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+dirs-next = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
+
+# Windowsでコンソールウィンドウを非表示にする（UI起動時）
+# 登録コマンド時はコンソールが必要なので、サブコマンドで切り替える
+[profile.release]
+opt-level = "s"  # サイズ優先
+strip = true
