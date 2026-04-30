@@ -279,9 +279,18 @@ impl eframe::App for PickerApp {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
-            if ui.button("キャンセル").clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            ui.horizontal(|ui| {
+                if ui.button("キャンセル").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if let Some(tag) = &self.config.update_available {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("⬆ {} 公開中", tag))
+                            .color(egui::Color32::from_rgb(80, 180, 80))
+                            .small());
+                    });
+                }
+            });
         });
 
         if let Some((gi, pi)) = self.selected {
