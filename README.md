@@ -1,6 +1,7 @@
 # brows
 
 Windows 11 向けブラウザ選択ツール。リンクを開くたびに、インストール済みブラウザの一覧からどれで開くか選べます。
+
 <img width="448" height="415" alt="image" src="https://github.com/user-attachments/assets/b6dc38c2-1266-4bce-9740-96b717296c30" />
 
 <img width="419" height="343" alt="image" src="https://github.com/user-attachments/assets/9be684ce-90f1-45d7-85f9-fb211928b176" />
@@ -10,7 +11,7 @@ Windows 11 向けブラウザ選択ツール。リンクを開くたびに、イ
 - インストール済みブラウザを自動検出（Chrome / Edge / Vivaldi / Brave など）
 - Chrome / Edge など Chromium 系ブラウザはプロファイルごとに選択可能
 - ブラウザの表示順をドラッグで変更・保存
-- URL パターンに応じて自動でブラウザを選択するルール設定
+- URL パターンに応じて自動でブラウザを選択するルールを GUI で設定
 - 起動時にバックグラウンドでアップデートを確認、設定画面から更新可能
 
 ## インストール
@@ -31,17 +32,11 @@ Windows 11 向けブラウザ選択ツール。リンクを開くたびに、イ
 
 ### URL ルール設定
 
-`%APPDATA%\brows\config.toml` を直接編集することで、URL パターンに応じたブラウザの自動選択が設定できます。
+設定画面の「URL ルール」セクションから、URL パターンに応じたブラウザの自動選択を設定できます。パターンにマッチした URL はブラウザ選択ダイアログを表示せず、直接指定のブラウザで開きます。
 
-```toml
-[[rules]]
-pattern = "github.com"
-browser = "Google Chrome"
+Chrome などのプロファイルも指定可能です（プロファイルの表示名で選択）。
 
-[[rules]]
-pattern = "work.example.com"
-browser = "Microsoft Edge"
-```
+設定は `%APPDATA%\brows\config.toml` に保存されます。
 
 ## ビルド
 
@@ -50,6 +45,10 @@ cargo build --release
 ```
 
 `target/release/brows.exe` が生成されます。Rust ツールチェインのみ必要で、外部ツール不要です。
+
+## ライセンス
+
+MIT License
 
 ## 要件
 

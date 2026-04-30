@@ -1,9 +1,22 @@
 use crate::browser::{self, Browser, BrowserGroup};
-use crate::config::Config;
+use crate::config::{Config, Rule};
 use crate::registry;
 use crate::updater::{UpdateState, Updater};
 use anyhow::Result;
 use eframe::egui;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+fn app_icon() -> Option<Arc<egui::IconData>> {
+    let exe = std::env::current_exe().ok()?;
+    let img = crate::icon::load(&exe.to_string_lossy())?;
+    let rgba = img.pixels.iter().flat_map(|p| [p.r(), p.g(), p.b(), p.a()]).collect();
+    Some(Arc::new(egui::IconData {
+        rgba,
+        width: img.width() as u32,
+        height: img.height() as u32,
+    }))
+}
 
 fn setup_fonts(cc: &eframe::CreationContext) {
     let mut fonts = egui::FontDefinitions::default();
@@ -51,14 +64,13 @@ pub fn show_picker(url: String) -> Result<()> {
         }
     }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("brows")
-            .with_inner_size([400.0, 300.0])
-            .with_resizable(false)
-            .with_always_on_top(),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("brows")
+        .with_inner_size([400.0, 300.0])
+        .with_resizable(false)
+        .with_always_on_top();
+    if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "brows",
@@ -103,6 +115,21 @@ impl PickerApp {
         self.config.browser_order = self.groups.iter().map(|g| g.exe_path.clone()).collect();
         let _ = self.config.save();
     }
+}
+
+fn draw_x_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let color = if resp.hovered() {
+        egui::Color32::from_rgb(220, 80, 80)
+    } else {
+        ui.style().visuals.weak_text_color()
+    };
+    let c = rect.center();
+    let d = 4.0;
+    let stroke = egui::Stroke::new(1.5, color);
+    ui.painter().line_segment([egui::pos2(c.x - d, c.y - d), egui::pos2(c.x + d, c.y + d)], stroke);
+    ui.painter().line_segment([egui::pos2(c.x + d, c.y - d), egui::pos2(c.x - d, c.y + d)], stroke);
+    resp
 }
 
 fn draw_drop_line(ui: &egui::Ui, x_min: f32, x_max: f32, y: f32) {
@@ -283,13 +310,16 @@ impl eframe::App for PickerApp {
                 if ui.button("キャンセル").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if let Some(tag) = &self.config.update_available {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(tag) = &self.config.update_available {
                         ui.label(egui::RichText::new(format!("⬆ {} 公開中", tag))
                             .color(egui::Color32::from_rgb(80, 180, 80))
                             .small());
-                    });
-                }
+                    } else {
+                        ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .weak().small());
+                    }
+                });
             });
         });
 
@@ -306,22 +336,22 @@ impl eframe::App for PickerApp {
 
 pub fn show_settings() -> Result<()> {
     let browsers = browser::detect().unwrap_or_default();
+    let groups = browser::detect_grouped().unwrap_or_default();
     let config = Config::load().unwrap_or_default();
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("brows - 設定")
-            .with_inner_size([440.0, 380.0])
-            .with_resizable(false),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("brows - 設定")
+        .with_inner_size([480.0, 520.0])
+        .with_resizable(true);
+    if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "brows settings",
         options,
         Box::new(move |cc| {
             setup_fonts(cc);
-            Box::new(SettingsApp::new(browsers, &config))
+            Box::new(SettingsApp::new(browsers, groups, config))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -331,15 +361,40 @@ pub fn show_settings() -> Result<()> {
 
 struct SettingsApp {
     browsers: Vec<Browser>,
+    groups: Vec<BrowserGroup>,
     registered: bool,
     status_msg: Option<String>,
     updater: Updater,
+    config: Config,
+    new_pattern: String,
+    new_browser: String,
+    icons: HashMap<String, egui::TextureHandle>,
+    icons_loaded: bool,
 }
 
 impl SettingsApp {
-    fn new(browsers: Vec<Browser>, config: &Config) -> Self {
+    fn new(browsers: Vec<Browser>, groups: Vec<BrowserGroup>, config: Config) -> Self {
         let registered = is_registered();
-        Self { browsers, registered, status_msg: None, updater: Updater::from_config(config) }
+        let updater = Updater::from_config(&config);
+        let new_browser = groups.first()
+            .and_then(|g| g.browsers.first())
+            .map(|b| b.name.clone())
+            .unwrap_or_default();
+        Self {
+            browsers, groups, registered, status_msg: None, updater, config,
+            new_pattern: String::new(), new_browser,
+            icons: HashMap::new(), icons_loaded: false,
+        }
+    }
+
+    fn browser_names(&self) -> Vec<String> {
+        self.groups.iter().flat_map(|g| {
+            if g.browsers.len() == 1 {
+                vec![g.name.clone()]
+            } else {
+                g.browsers.iter().map(|b| b.name.clone()).collect()
+            }
+        }).collect()
     }
 }
 
@@ -353,9 +408,25 @@ fn is_registered() -> bool {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.icons_loaded {
+            self.icons_loaded = true;
+            for g in &self.groups {
+                if let Some(img) = crate::icon::load(&g.exe_path) {
+                    let tex = ctx.load_texture(&g.name, img, egui::TextureOptions::LINEAR);
+                    for b in &g.browsers {
+                        self.icons.insert(b.name.clone(), tex.clone());
+                    }
+                    self.icons.insert(g.name.clone(), tex);
+                }
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(12.0);
-            ui.heading("brows");
+            ui.horizontal(|ui| {
+                ui.heading("brows");
+                ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak().small());
+            });
             ui.label(egui::RichText::new("ブラウザ選択ツール for Windows 11").weak());
             ui.add_space(16.0);
             ui.separator();
@@ -436,6 +507,76 @@ impl eframe::App for SettingsApp {
                         .color(egui::Color32::from_rgb(200, 80, 80)).small());
                 }
             }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label("URL ルール");
+            ui.add_space(4.0);
+
+            let browser_names = self.browser_names();
+            let mut delete_idx: Option<usize> = None;
+            for (i, rule) in self.config.rules.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    if let Some(tex) = self.icons.get(&rule.browser) {
+                        ui.painter().image(tex.id(), icon_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE);
+                    }
+                    ui.label(egui::RichText::new(&rule.pattern).monospace());
+                    ui.label(egui::RichText::new("→").weak());
+                    ui.label(&rule.browser);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if draw_x_button(ui).clicked() {
+                            delete_idx = Some(i);
+                        }
+                    });
+                });
+            }
+            if let Some(i) = delete_idx {
+                self.config.rules.remove(i);
+                let _ = self.config.save();
+            }
+            if self.config.rules.is_empty() {
+                ui.label(egui::RichText::new("ルールなし").weak().small());
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.new_pattern)
+                    .hint_text("パターン (例: github.com)")
+                    .desired_width(160.0));
+                egui::ComboBox::from_id_source("rule_browser")
+                    .selected_text(&self.new_browser)
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        for name in &browser_names {
+                            let is_selected = self.new_browser == *name;
+                            let resp = ui.horizontal(|ui| {
+                                let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                                if let Some(tex) = self.icons.get(name) {
+                                    ui.painter().image(tex.id(), icon_rect,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE);
+                                }
+                                ui.selectable_label(is_selected, name.as_str())
+                            });
+                            if resp.inner.clicked() {
+                                self.new_browser = name.clone();
+                            }
+                        }
+                    });
+                let can_add = !self.new_pattern.is_empty() && !self.new_browser.is_empty();
+                if ui.add_enabled(can_add, egui::Button::new("追加")).clicked() {
+                    self.config.rules.push(Rule {
+                        pattern: self.new_pattern.clone(),
+                        browser: self.new_browser.clone(),
+                    });
+                    let _ = self.config.save();
+                    self.new_pattern.clear();
+                }
+            });
 
             ui.add_space(8.0);
             ui.separator();
