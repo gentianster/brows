@@ -80,7 +80,27 @@ impl Updater {
         let bat = std::env::temp_dir().join("brows_update.bat");
 
         let script = format!(
-            "@echo off\r\ntimeout /t 1 /nobreak >nul\r\nmove /y \"{old}\" \"{backup}\"\r\nmove /y \"{new}\" \"{cur}\"\r\nstart \"\" \"{cur}\"\r\ndel \"%~f0\"",
+            concat!(
+                "@echo off\r\n",
+                "timeout /t 2 /nobreak >nul\r\n",
+                // 現在の exe をバックアップに移動。失敗したら新ファイルを消して終了
+                "move /y \"{old}\" \"{backup}\"\r\n",
+                "if errorlevel 1 (\r\n",
+                "  del \"{new}\" 2>nul\r\n",
+                "  del \"%~f0\"\r\n",
+                "  exit /b 1\r\n",
+                ")\r\n",
+                // 新しい exe を配置。失敗したらバックアップを元に戻して終了
+                "move /y \"{new}\" \"{cur}\"\r\n",
+                "if errorlevel 1 (\r\n",
+                "  move /y \"{backup}\" \"{cur}\" 2>nul\r\n",
+                "  del \"{new}\" 2>nul\r\n",
+                "  del \"%~f0\"\r\n",
+                "  exit /b 1\r\n",
+                ")\r\n",
+                "start \"\" \"{cur}\"\r\n",
+                "del \"%~f0\""
+            ),
             cur = current_exe.display(),
             backup = old_exe.display(),
             new = tmp_exe.display(),
