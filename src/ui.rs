@@ -5,7 +5,7 @@ use crate::updater::{UpdateState, Updater};
 use anyhow::Result;
 use eframe::egui;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn app_icon() -> Option<Arc<egui::IconData>> {
     let exe = std::env::current_exe().ok()?;
@@ -38,14 +38,34 @@ fn setup_fonts(cc: &eframe::CreationContext) {
 // ─── ブラウザ選択ピッカー ────────────────────────────────────────
 
 pub fn show_picker(url: String) -> Result<()> {
-    let mut groups = browser::detect_grouped()?;
-    let config = Config::load()?;
+    let mut config = Config::load()?;
+    let has_cache = !config.cached_groups.is_empty();
 
-    if !config.browser_order.is_empty() {
-        groups.sort_by_key(|g| {
-            config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX)
-        });
-    }
+    // キャッシュがあれば即使用、なければ初回のみ同期検出してキャッシュ保存
+    let groups = if has_cache {
+        let mut g = std::mem::take(&mut config.cached_groups);
+        if !config.browser_order.is_empty() {
+            g.sort_by_key(|g| config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX));
+        }
+        g
+    } else {
+        let mut g = browser::detect_grouped()?;
+        if !config.browser_order.is_empty() {
+            g.sort_by_key(|x| config.browser_order.iter().position(|o| o == &x.exe_path).unwrap_or(usize::MAX));
+        }
+        config.cached_groups = g.clone();
+        let _ = config.save();
+        g
+    };
+
+    // バックグラウンドで再検出してキャッシュを更新
+    let pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>> = Arc::new(Mutex::new(None));
+    let pending_clone = pending_groups.clone();
+    std::thread::spawn(move || {
+        if let Ok(fresh) = browser::detect_grouped() {
+            *pending_clone.lock().unwrap() = Some(fresh);
+        }
+    });
 
     for g in &groups {
         for b in &g.browsers {
@@ -75,7 +95,7 @@ pub fn show_picker(url: String) -> Result<()> {
         options,
         Box::new(|cc| {
             setup_fonts(cc);
-            Box::new(PickerApp::new(url, groups, config))
+            Box::new(PickerApp::new(url, groups, config, pending_groups))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -94,10 +114,11 @@ struct PickerApp {
     drag_src: Option<usize>,
     drag_tgt: usize,
     row_rects: Vec<egui::Rect>,
+    pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
 }
 
 impl PickerApp {
-    fn new(url: String, groups: Vec<BrowserGroup>, config: Config) -> Self {
+    fn new(url: String, groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>) -> Self {
         let n = groups.len();
         Self {
             url, groups, config,
@@ -105,6 +126,7 @@ impl PickerApp {
             icons: vec![None; n], icons_loaded: false,
             drag_src: None, drag_tgt: 0,
             row_rects: vec![egui::Rect::NOTHING; n],
+            pending_groups,
         }
     }
 
@@ -141,6 +163,31 @@ fn draw_drop_line(ui: &egui::Ui, x_min: f32, x_max: f32, y: f32) {
 impl eframe::App for PickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let lang = crate::lang::get();
+
+        // バックグラウンド検出が完了していたらキャッシュ更新
+        if let Ok(mut lock) = self.pending_groups.try_lock() {
+            if let Some(fresh) = lock.take() {
+                let mut sorted = fresh.clone();
+                if !self.config.browser_order.is_empty() {
+                    sorted.sort_by_key(|g| self.config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX));
+                }
+                let changed = sorted.len() != self.groups.len()
+                    || sorted.iter().zip(&self.groups).any(|(a, b)| a.exe_path != b.exe_path);
+                if changed {
+                    let n = sorted.len();
+                    self.groups = sorted;
+                    self.icons = vec![None; n];
+                    self.icons_loaded = false;
+                    self.row_rects = vec![egui::Rect::NOTHING; n];
+                }
+                std::thread::spawn(move || {
+                    if let Ok(mut cfg) = crate::config::Config::load() {
+                        cfg.cached_groups = fresh;
+                        let _ = cfg.save();
+                    }
+                });
+            }
+        }
 
         if !self.icons_loaded {
             self.icons_loaded = true;
