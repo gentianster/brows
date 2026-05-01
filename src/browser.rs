@@ -1,8 +1,9 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use winreg::enums::*;
 use winreg::RegKey;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Browser {
     pub name: String,
     pub exe_path: String,
@@ -134,6 +135,7 @@ pub fn detect() -> Result<Vec<Browser>> {
 }
 
 /// ピッカー用グループ。browsers が 1 件なら直接起動、複数ならプロファイル選択
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserGroup {
     pub name: String,
     pub exe_path: String,

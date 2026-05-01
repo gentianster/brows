@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::browser::BrowserGroup;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -9,9 +10,11 @@ pub struct Config {
     #[serde(default)]
     pub browser_order: Vec<String>,
     #[serde(default)]
-    pub last_update_check: Option<u64>, // Unix timestamp (seconds)
+    pub last_update_check: Option<u64>,
     #[serde(default)]
-    pub update_available: Option<String>, // tag name e.g. "v0.2.0"
+    pub update_available: Option<String>,
+    #[serde(default)]
+    pub cached_groups: Vec<BrowserGroup>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
