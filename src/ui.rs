@@ -1,11 +1,11 @@
-use crate::browser::{self, Browser, BrowserGroup};
+use crate::browser::{self, BrowserGroup};
 use crate::config::{Config, Rule};
 use crate::registry;
 use crate::updater::{UpdateState, Updater};
 use anyhow::Result;
 use eframe::egui;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn app_icon() -> Option<Arc<egui::IconData>> {
     let exe = std::env::current_exe().ok()?;
@@ -18,19 +18,26 @@ fn app_icon() -> Option<Arc<egui::IconData>> {
     }))
 }
 
+static FONT_DATA: OnceLock<Option<Vec<u8>>> = OnceLock::new();
+
 fn setup_fonts(cc: &eframe::CreationContext) {
-    let mut fonts = egui::FontDefinitions::default();
-    let font_candidates = [
-        "C:\\Windows\\Fonts\\YuGothM.ttc",
-        "C:\\Windows\\Fonts\\meiryo.ttc",
-        "C:\\Windows\\Fonts\\msgothic.ttc",
-    ];
-    for path in &font_candidates {
-        if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert("ja".to_owned(), egui::FontData::from_owned(data));
-            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("ja".to_owned());
-            break;
+    let data = FONT_DATA.get_or_init(|| {
+        let candidates = [
+            "C:\\Windows\\Fonts\\YuGothM.ttc",
+            "C:\\Windows\\Fonts\\meiryo.ttc",
+            "C:\\Windows\\Fonts\\msgothic.ttc",
+        ];
+        for path in &candidates {
+            if let Ok(data) = std::fs::read(path) {
+                return Some(data);
+            }
         }
+        None
+    });
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(data) = data {
+        fonts.font_data.insert("ja".to_owned(), egui::FontData::from_owned(data.clone()));
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("ja".to_owned());
     }
     cc.egui_ctx.set_fonts(fonts);
 }
@@ -376,9 +383,24 @@ impl eframe::App for PickerApp {
 
 pub fn show_settings() -> Result<()> {
     let lang = crate::lang::get();
-    let browsers = browser::detect().unwrap_or_default();
-    let groups = browser::detect_grouped().unwrap_or_default();
-    let config = Config::load().unwrap_or_default();
+    let mut config = Config::load().unwrap_or_default();
+
+    let groups = if !config.cached_groups.is_empty() {
+        config.cached_groups.clone()
+    } else {
+        let g = browser::detect_grouped().unwrap_or_default();
+        config.cached_groups = g.clone();
+        let _ = config.save();
+        g
+    };
+
+    let pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>> = Arc::new(Mutex::new(None));
+    let pending_clone = pending_groups.clone();
+    std::thread::spawn(move || {
+        if let Ok(fresh) = browser::detect_grouped() {
+            *pending_clone.lock().unwrap() = Some(fresh);
+        }
+    });
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(lang.window_title_settings)
@@ -392,7 +414,7 @@ pub fn show_settings() -> Result<()> {
         options,
         Box::new(move |cc| {
             setup_fonts(cc);
-            Box::new(SettingsApp::new(browsers, groups, config))
+            Box::new(SettingsApp::new(groups, config, pending_groups))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -401,7 +423,6 @@ pub fn show_settings() -> Result<()> {
 }
 
 struct SettingsApp {
-    browsers: Vec<Browser>,
     groups: Vec<BrowserGroup>,
     registered: bool,
     status_msg: Option<String>,
@@ -412,10 +433,11 @@ struct SettingsApp {
     icons: HashMap<String, egui::TextureHandle>,
     icons_loaded: bool,
     rule_search: String,
+    pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
 }
 
 impl SettingsApp {
-    fn new(browsers: Vec<Browser>, groups: Vec<BrowserGroup>, config: Config) -> Self {
+    fn new(groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>) -> Self {
         let registered = is_registered();
         let updater = Updater::from_config(&config);
         let new_browser = groups.first()
@@ -423,10 +445,11 @@ impl SettingsApp {
             .map(|b| b.name.clone())
             .unwrap_or_default();
         Self {
-            browsers, groups, registered, status_msg: None, updater, config,
+            groups, registered, status_msg: None, updater, config,
             new_pattern: String::new(), new_browser,
             icons: HashMap::new(), icons_loaded: false,
             rule_search: String::new(),
+            pending_groups,
         }
     }
 
@@ -452,6 +475,24 @@ fn is_registered() -> bool {
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let lang = crate::lang::get();
+
+        if let Ok(mut lock) = self.pending_groups.try_lock() {
+            if let Some(fresh) = lock.take() {
+                let changed = fresh.len() != self.groups.len()
+                    || fresh.iter().zip(&self.groups).any(|(a, b)| a.exe_path != b.exe_path);
+                if changed {
+                    self.groups = fresh.clone();
+                    self.icons.clear();
+                    self.icons_loaded = false;
+                }
+                std::thread::spawn(move || {
+                    if let Ok(mut cfg) = crate::config::Config::load() {
+                        cfg.cached_groups = fresh;
+                        let _ = cfg.save();
+                    }
+                });
+            }
+        }
 
         if !self.icons_loaded {
             self.icons_loaded = true;
@@ -651,13 +692,13 @@ impl eframe::App for SettingsApp {
             ui.label(lang.section_browsers);
             ui.add_space(4.0);
 
-            if self.browsers.is_empty() {
+            if self.groups.is_empty() {
                 ui.label(egui::RichText::new(lang.no_browsers).weak());
             } else {
-                for b in &self.browsers {
+                for g in &self.groups {
                     ui.horizontal(|ui| {
-                        ui.label(&b.name);
-                        ui.label(egui::RichText::new(&b.exe_path).weak().small());
+                        ui.label(&g.name);
+                        ui.label(egui::RichText::new(&g.exe_path).weak().small());
                     });
                 }
             }
