@@ -18,6 +18,13 @@ fn app_icon() -> Option<Arc<egui::IconData>> {
     }))
 }
 
+fn center_pos(win_w: f32, win_h: f32) -> egui::Pos2 {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32;
+    let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32;
+    egui::pos2((sw - win_w) / 2.0, (sh - win_h) / 2.0)
+}
+
 static FONT_DATA: OnceLock<Option<Vec<u8>>> = OnceLock::new();
 
 fn setup_fonts(cc: &eframe::CreationContext) {
@@ -92,20 +99,28 @@ pub fn show_picker(url: String) -> Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("brows")
         .with_inner_size([400.0, 300.0])
+        .with_position(center_pos(400.0, 300.0))
         .with_resizable(false)
         .with_always_on_top();
     if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
+
+    let open_settings = Arc::new(Mutex::new(false));
+    let open_settings_clone = open_settings.clone();
 
     eframe::run_native(
         "brows",
         options,
         Box::new(|cc| {
             setup_fonts(cc);
-            Box::new(PickerApp::new(url, groups, config, pending_groups))
+            Box::new(PickerApp::new(url, groups, config, pending_groups, open_settings_clone))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if *open_settings.lock().unwrap() {
+        show_settings()?;
+    }
 
     Ok(())
 }
@@ -122,10 +137,11 @@ struct PickerApp {
     drag_tgt: usize,
     row_rects: Vec<egui::Rect>,
     pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+    open_settings: Arc<Mutex<bool>>,
 }
 
 impl PickerApp {
-    fn new(url: String, groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>) -> Self {
+    fn new(url: String, groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>, open_settings: Arc<Mutex<bool>>) -> Self {
         let n = groups.len();
         Self {
             url, groups, config,
@@ -134,6 +150,7 @@ impl PickerApp {
             drag_src: None, drag_tgt: 0,
             row_rects: vec![egui::Rect::NOTHING; n],
             pending_groups,
+            open_settings,
         }
     }
 
@@ -352,6 +369,12 @@ impl eframe::App for PickerApp {
                 if ui.button(lang.cancel).clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                if ui.add(egui::Button::new(
+                    egui::RichText::new(format!("⚙ {}", lang.settings)).small()
+                ).frame(false)).clicked() {
+                    *self.open_settings.lock().unwrap() = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(tag) = &self.config.update_available {
                         if crate::updater::is_newer(tag) {
@@ -405,6 +428,7 @@ pub fn show_settings() -> Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(lang.window_title_settings)
         .with_inner_size([480.0, 520.0])
+        .with_position(center_pos(480.0, 520.0))
         .with_resizable(true);
     if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
     let options = eframe::NativeOptions { viewport, ..Default::default() };

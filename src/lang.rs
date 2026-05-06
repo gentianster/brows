@@ -2,6 +2,7 @@ pub struct Strings {
     // Picker
     pub which_browser: &'static str,
     pub cancel: &'static str,
+    pub settings: &'static str,
     // Update
     pub update_suffix: &'static str,
     pub update_error_prefix: &'static str,
@@ -35,6 +36,7 @@ pub struct Strings {
 static JA: Strings = Strings {
     which_browser: "どのブラウザで開きますか？",
     cancel: "キャンセル",
+    settings: "設定",
     update_suffix: "公開中",
     update_error_prefix: "更新エラー: ",
     up_to_date: "最新バージョン",
@@ -63,6 +65,7 @@ static JA: Strings = Strings {
 static EN: Strings = Strings {
     which_browser: "Open with which browser?",
     cancel: "Cancel",
+    settings: "Settings",
     update_suffix: "available",
     update_error_prefix: "Update error: ",
     up_to_date: "Up to date",
