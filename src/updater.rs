@@ -168,13 +168,34 @@ fn do_download(tag: &str) -> Result<(), String> {
         REPO, tag
     );
     let dest = std::env::temp_dir().join("brows_update.exe");
+    // -f: HTTP エラー時に非ゼロ終了 (これがないと 404 でも成功扱いになる)
     let status = std::process::Command::new("curl")
-        .args(["-sL", "--connect-timeout", "30", "-o", &dest.to_string_lossy(), &url])
+        .args(["-fsL", "--connect-timeout", "30", "-o", &dest.to_string_lossy(), &url])
         .creation_flags(CREATE_NO_WINDOW)
         .status()
         .map_err(|e| e.to_string())?;
 
-    if status.success() { Ok(()) } else { Err("ダウンロード失敗".into()) }
+    if !status.success() {
+        let _ = std::fs::remove_file(&dest);
+        return Err("ダウンロード失敗".into());
+    }
+
+    // PE ヘッダー ("MZ") と最低サイズを確認
+    let meta = std::fs::metadata(&dest).map_err(|e| e.to_string())?;
+    if meta.len() < 100_000 {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!("ファイルサイズ異常: {} bytes", meta.len()));
+    }
+    let mut buf = [0u8; 2];
+    std::fs::File::open(&dest)
+        .and_then(|mut f| { use std::io::Read; f.read_exact(&mut buf) })
+        .map_err(|e| e.to_string())?;
+    if &buf != b"MZ" {
+        let _ = std::fs::remove_file(&dest);
+        return Err("無効な実行ファイル（PE ヘッダーなし）".into());
+    }
+
+    Ok(())
 }
 
 pub fn is_newer(tag: &str) -> bool {

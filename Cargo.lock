@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "brows"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "dirs-next",
