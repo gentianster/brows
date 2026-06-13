@@ -9,6 +9,7 @@ const CHECK_INTERVAL_SECS: u64 = 86400; // 1日
 #[derive(Clone, Debug, PartialEq)]
 pub enum UpdateState {
     UpToDate,
+    Checking,
     Available(String),
     Downloading,
     ReadyToRestart,
@@ -35,6 +36,25 @@ impl Updater {
         }
 
         Self { state }
+    }
+
+    /// 手動チェック。期限に関係なく即座に API を叩き、失敗時はエラー表示する
+    pub fn check_now(&self) {
+        {
+            let mut s = self.state.lock().unwrap();
+            if matches!(*s, UpdateState::Checking | UpdateState::Downloading) {
+                return;
+            }
+            *s = UpdateState::Checking;
+        }
+        let state = self.state.clone();
+        std::thread::spawn(move || {
+            *state.lock().unwrap() = match run_check() {
+                Some(tag) if is_newer(&tag) => UpdateState::Available(tag),
+                Some(_) => UpdateState::UpToDate,
+                None => UpdateState::Error(crate::lang::get().check_failed.into()),
+            };
+        });
     }
 
     pub fn download_and_restart(&self) {
@@ -114,25 +134,31 @@ pub fn check_if_due() {
 /// state が渡されていれば（設定画面）UI 表示用の状態も更新する
 fn spawn_check(state: Option<Arc<Mutex<UpdateState>>>) {
     std::thread::spawn(move || {
-        let now = unix_now();
-        // ネットワークアクセスを終えてから config を短時間だけロックして書く
-        let latest = fetch_latest_tag();
-        let _ = crate::config::Config::update(|cfg| {
-            cfg.last_update_check = Some(now);
-            match &latest {
-                Some(tag) if is_newer(tag) => cfg.update_available = Some(tag.clone()),
-                Some(_) => cfg.update_available = None,
-                None => {} // API 失敗時は前回の結果を維持
-            }
-        });
+        let latest = run_check();
         if let Some(state) = state {
             match latest {
                 Some(tag) if is_newer(&tag) => *state.lock().unwrap() = UpdateState::Available(tag),
                 Some(_) => *state.lock().unwrap() = UpdateState::UpToDate,
-                None => {}
+                None => {} // 自動チェックの失敗は前回の表示を維持
             }
         }
     });
+}
+
+/// API で最新タグを取得して config に保存する。取得失敗時は None
+fn run_check() -> Option<String> {
+    let now = unix_now();
+    // ネットワークアクセスを終えてから config を短時間だけロックして書く
+    let latest = fetch_latest_tag();
+    let _ = crate::config::Config::update(|cfg| {
+        cfg.last_update_check = Some(now);
+        match &latest {
+            Some(tag) if is_newer(tag) => cfg.update_available = Some(tag.clone()),
+            Some(_) => cfg.update_available = None,
+            None => {} // API 失敗時は前回の結果を維持
+        }
+    });
+    latest
 }
 
 fn is_due(last: Option<u64>) -> bool {
