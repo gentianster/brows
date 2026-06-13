@@ -30,7 +30,7 @@ pub fn open_url(url: String) -> Result<()> {
     match crate::ipc::try_bind() {
         Some(listener) => show_picker(Some(url), Some(listener)),
         None => {
-            // ポートは塞がっているが転送に失敗した。起動直後の競合の
+            // 既に常駐がいて bind できないが転送には失敗した。起動直後の競合の
             // 可能性があるので一度だけ再試行し、ダメなら常駐なしで表示する
             if crate::ipc::send_open(&url) {
                 return Ok(());
@@ -44,11 +44,11 @@ pub fn open_url(url: String) -> Result<()> {
 pub fn run_resident() -> Result<()> {
     match crate::ipc::try_bind() {
         Some(listener) => show_picker(None, Some(listener)),
-        None => Ok(()), // 既に常駐がいる（またはポートが使えない）ので何もしない
+        None => Ok(()), // 既に常駐がいる（またはパイプを作成できない）ので何もしない
     }
 }
 
-fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> Result<()> {
+fn show_picker(url: Option<String>, listener: Option<crate::ipc::PipeServer>) -> Result<()> {
     let config = Config::load()?;
 
     // キャッシュがあれば即使用、なければ初回のみ同期検出してキャッシュ保存
@@ -116,35 +116,33 @@ fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> 
 
 /// 常駐モード: 別プロセスからのリクエストを受け付けるスレッドを起動する
 fn spawn_ipc_server(
-    listener: std::net::TcpListener,
+    server: crate::ipc::PipeServer,
     ctx: egui::Context,
     incoming: Arc<Mutex<Option<String>>>,
     hwnd: Option<isize>,
 ) {
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            match crate::ipc::read_request(stream) {
-                Some(crate::ipc::Request::Open(url)) => {
-                    crate::updater::check_if_due();
-                    // ルール・既定ブラウザにマッチしたら UI を出さず直接起動
-                    let auto = Config::load()
-                        .ok()
-                        .and_then(|cfg| find_auto_browser(&cfg.cached_groups, &cfg, &url).cloned());
-                    if let Some(b) = auto {
-                        let _ = b.launch(&url);
-                        continue;
-                    }
-                    *incoming.lock().unwrap() = Some(url);
-                    // 非表示ウィンドウは再描画イベントを受け取れないため、
-                    // egui のコマンドではなく Win32 API で直接再表示する
-                    if let Some(h) = hwnd {
-                        force_show(h);
-                    }
-                    ctx.request_repaint();
+    std::thread::spawn(move || loop {
+        match server.accept() {
+            Some(crate::ipc::Request::Open(url)) => {
+                crate::updater::check_if_due();
+                // ルール・既定ブラウザにマッチしたら UI を出さず直接起動
+                let auto = Config::load()
+                    .ok()
+                    .and_then(|cfg| find_auto_browser(&cfg.cached_groups, &cfg, &url).cloned());
+                if let Some(b) = auto {
+                    let _ = b.launch(&url);
+                    continue;
                 }
-                Some(crate::ipc::Request::Exit) => std::process::exit(0),
-                None => {}
+                *incoming.lock().unwrap() = Some(url);
+                // 非表示ウィンドウは再描画イベントを受け取れないため、
+                // egui のコマンドではなく Win32 API で直接再表示する
+                if let Some(h) = hwnd {
+                    force_show(h);
+                }
+                ctx.request_repaint();
             }
+            Some(crate::ipc::Request::Exit) => std::process::exit(0),
+            None => {}
         }
     });
 }
