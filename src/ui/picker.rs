@@ -94,6 +94,10 @@ fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
 
     let resident = listener.is_some();
+    // 常駐になるときだけタスクトレイにアイコンを出す（設定画面への導線）
+    if resident {
+        super::tray::spawn();
+    }
     let incoming: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let incoming_clone = incoming.clone();
 
@@ -142,7 +146,10 @@ fn spawn_ipc_server(
                     }
                     ctx.request_repaint();
                 }
-                Some(crate::ipc::Request::Exit) => std::process::exit(0),
+                Some(crate::ipc::Request::Exit) => {
+                    super::tray::cleanup();
+                    std::process::exit(0);
+                }
                 None => {}
             }
         }

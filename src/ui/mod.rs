@@ -1,5 +1,6 @@
 mod picker;
 mod settings;
+mod tray;
 mod win32;
 
 pub use picker::{open_url, run_resident};
