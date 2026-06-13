@@ -71,6 +71,8 @@ impl Updater {
     }
 
     pub fn restart() {
+        // 古い exe のまま動き続けないよう、常駐ピッカーを先に終了させる
+        let _ = crate::ipc::send_exit();
         let current_exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(_) => return,

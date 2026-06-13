@@ -32,10 +32,20 @@ src/
 ├── main.rs       エントリーポイント（サブコマンド振り分け）
 ├── browser.rs    ブラウザ検出（レジストリ + Chrome プロファイル）
 ├── icon.rs       Windows Shell API でブラウザアイコンを取得
+├── ipc.rs        常駐インスタンスへの URL 転送（ループバック TCP 127.0.0.1:48693）
 ├── registry.rs   Windows レジストリへの登録・解除
 ├── config.rs     設定ファイル（TOML）の読み書き
 └── ui.rs         egui による UI（ピッカー・設定画面）
 ```
+
+## 常駐動作
+
+ピッカーは初回起動後プロセスを終了せず、ウィンドウを非表示にして常駐する。
+2 回目以降の起動は常駐インスタンスへ URL を転送して即終了するため、ウィンドウ表示が高速。
+
+- シングルインスタンス判定はポート 48693 の bind 成否で行う（bind 成功 = 常駐になる）
+- 非表示ウィンドウは再描画イベントを受け取れないため、再表示は egui のコマンドではなく Win32 API（`ShowWindow`）で直接行う
+- 自動更新の再起動前に `BROWS-EXIT` を送って常駐を終了させる（古い exe の常駐が残らないように）
 
 ## 設定ファイル
 
@@ -70,6 +80,7 @@ gh pr create
 ## 既知の注意点
 
 - `--register` / `--unregister` は管理者権限が必要
+- ピッカーは選択後もタスクマネージャーに brows.exe が残る（常駐仕様）
 - `windows_subsystem = "windows"` を指定しているのでコンソール出力は不可
 - Chromium 系以外のブラウザ（Firefox 等）はプロファイル展開非対応
 - 日本語フォントは `YuGothM.ttc` → `meiryo.ttc` → `msgothic.ttc` の順でフォールバック
