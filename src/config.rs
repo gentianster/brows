@@ -2,6 +2,12 @@ use anyhow::Result;
 use crate::browser::BrowserGroup;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// load → 変更 → save を直列化するためのプロセス内ロック。
+/// 複数スレッドが同時に load-modify-save すると互いのフィールドを
+/// 巻き戻してしまうため、`Config::update` 経由の書き込みはここを通す
+static UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -17,7 +23,7 @@ pub struct Config {
     pub cached_groups: Vec<BrowserGroup>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     /// URLに含まれる文字列
     pub pattern: String,
@@ -42,6 +48,26 @@ impl Config {
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
         Ok(())
+    }
+
+    /// 最新の config を読み、変更を加えて保存する。
+    /// バックグラウンドスレッドからの書き込みは必ずこれを使うこと
+    /// （in-memory の Config を save() すると他スレッドの変更を巻き戻す）
+    pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
+        let _guard = UPDATE_LOCK.lock().unwrap();
+        let mut cfg = Config::load().unwrap_or_default();
+        f(&mut cfg);
+        cfg.save()
+    }
+
+    /// browser_order の並び順でグループをソートする（未登録は末尾）
+    pub fn sort_groups(&self, groups: &mut [BrowserGroup]) {
+        if self.browser_order.is_empty() {
+            return;
+        }
+        groups.sort_by_key(|g| {
+            self.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX)
+        });
     }
 
     /// URLにマッチするルールのブラウザ名を返す

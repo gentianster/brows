@@ -1,5 +1,7 @@
+use crate::util::json_str;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use winreg::enums::*;
 use winreg::RegKey;
 
@@ -24,12 +26,12 @@ impl Browser {
 /// `"C:\path\browser.exe" "%1"` 形式から exe パスだけを取り出す
 fn extract_exe(cmd: &str) -> String {
     let cmd = cmd.trim();
-    if cmd.starts_with('"') {
-        cmd[1..].splitn(2, '"').next().unwrap_or("").to_string()
+    if let Some(quoted) = cmd.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or("").to_string()
     } else if let Some(pos) = cmd.to_lowercase().find(".exe") {
         cmd[..pos + 4].to_string()
     } else {
-        cmd.splitn(2, ' ').next().unwrap_or(cmd).to_string()
+        cmd.split(' ').next().unwrap_or(cmd).to_string()
     }
 }
 
@@ -116,24 +118,6 @@ fn profile_name_from_local_state(local_state: &str, dir_name: &str) -> Option<St
     json_str(obj_body, "name")
 }
 
-/// JSON テキストから `"key": "value"` の value を返す（簡易・ネストなし）
-fn json_str(text: &str, key: &str) -> Option<String> {
-    let search = format!("\"{}\":", key);
-    let pos = text.find(&search)?;
-    let after = text[pos + search.len()..].trim_start();
-    if after.starts_with('"') {
-        let end = after[1..].find('"')?;
-        Some(after[1..end + 1].to_string())
-    } else {
-        None
-    }
-}
-
-/// インストール済みブラウザをレジストリから検出する（設定画面用・プロファイル展開なし）
-pub fn detect() -> Result<Vec<Browser>> {
-    detect_base()
-}
-
 /// ピッカー用グループ。browsers が 1 件なら直接起動、複数ならプロファイル選択
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserGroup {
@@ -144,7 +128,7 @@ pub struct BrowserGroup {
 
 /// ピッカー用。Chromium 系は複数プロファイルがあれば BrowserGroup にまとめる
 pub fn detect_grouped() -> Result<Vec<BrowserGroup>> {
-    let base = detect_base()?;
+    let base = detect()?;
     let mut groups = Vec::new();
 
     for b in base {
@@ -173,42 +157,30 @@ pub fn detect_grouped() -> Result<Vec<BrowserGroup>> {
     Ok(groups)
 }
 
-fn detect_base() -> Result<Vec<Browser>> {
-    let mut browsers = Vec::new();
-
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let clients_key = hklm.open_subkey("SOFTWARE\\Clients\\StartMenuInternet")?;
-
+/// StartMenuInternet 配下のブラウザを列挙して追加する（exe パスで重複排除）
+fn collect_clients(root: &RegKey, browsers: &mut Vec<Browser>) {
+    let Ok(clients_key) = root.open_subkey("SOFTWARE\\Clients\\StartMenuInternet") else {
+        return;
+    };
     for key_name in clients_key.enum_keys().flatten() {
         if let Ok(browser_key) = clients_key.open_subkey(&key_name) {
             if let Ok(cmd_key) = browser_key.open_subkey("shell\\open\\command") {
                 let exe_path: String = cmd_key.get_value("").unwrap_or_default();
                 let exe_path = extract_exe(&exe_path);
-                if !exe_path.is_empty() {
+                if !exe_path.is_empty() && !browsers.iter().any(|b| b.exe_path == exe_path) {
                     let name = display_name(&browser_key, &key_name);
                     browsers.push(Browser { name, exe_path, profile_dir: None });
                 }
             }
         }
     }
+}
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    if let Ok(clients_key) = hkcu.open_subkey("SOFTWARE\\Clients\\StartMenuInternet") {
-        for key_name in clients_key.enum_keys().flatten() {
-            if let Ok(browser_key) = clients_key.open_subkey(&key_name) {
-                if let Ok(cmd_key) = browser_key.open_subkey("shell\\open\\command") {
-                    let exe_path: String = cmd_key.get_value("").unwrap_or_default();
-                    let exe_path = extract_exe(&exe_path);
-                    if !exe_path.is_empty() {
-                        let name = display_name(&browser_key, &key_name);
-                        if !browsers.iter().any(|b| b.exe_path == exe_path) {
-                            browsers.push(Browser { name, exe_path, profile_dir: None });
-                        }
-                    }
-                }
-            }
-        }
-    }
+/// インストール済みブラウザをレジストリから検出する（プロファイル展開なし）
+pub fn detect() -> Result<Vec<Browser>> {
+    let mut browsers = Vec::new();
+    collect_clients(&RegKey::predef(HKEY_LOCAL_MACHINE), &mut browsers);
+    collect_clients(&RegKey::predef(HKEY_CURRENT_USER), &mut browsers);
 
     let self_exe_name = std::env::current_exe()
         .ok()
@@ -218,8 +190,47 @@ fn detect_base() -> Result<Vec<Browser>> {
         let path = std::path::Path::new(&b.exe_path);
         let file_name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
         !b.exe_path.to_lowercase().ends_with("iexplore.exe")
-            && self_exe_name.as_deref().map_or(true, |s| file_name.as_deref() != Some(s))
+            && self_exe_name.as_deref().is_none_or(|s| file_name.as_deref() != Some(s))
     });
 
     Ok(browsers)
+}
+
+/// ブラウザ構成（数・パス）が変わったかどうか
+pub fn groups_differ(a: &[BrowserGroup], b: &[BrowserGroup]) -> bool {
+    a.len() != b.len() || a.iter().zip(b).any(|(x, y)| x.exe_path != y.exe_path)
+}
+
+/// バックグラウンドでのブラウザ再検出。
+/// UI 表示中に `spawn()` で再検出を始め、各フレームの `take()` で結果を回収する。
+/// 結果はキャッシュ（config の cached_groups）へも別スレッドで保存される
+#[derive(Clone)]
+pub struct BackgroundDetect {
+    pending: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+}
+
+impl BackgroundDetect {
+    pub fn new() -> Self {
+        Self { pending: Arc::new(Mutex::new(None)) }
+    }
+
+    /// 再検出スレッドを開始する
+    pub fn spawn(&self) {
+        let pending = self.pending.clone();
+        std::thread::spawn(move || {
+            if let Ok(fresh) = detect_grouped() {
+                *pending.lock().unwrap() = Some(fresh);
+            }
+        });
+    }
+
+    /// 検出が完了していれば結果を取り出し、キャッシュ保存も予約する
+    pub fn take(&self) -> Option<Vec<BrowserGroup>> {
+        let fresh = self.pending.try_lock().ok()?.take()?;
+        let to_save = fresh.clone();
+        std::thread::spawn(move || {
+            let _ = crate::config::Config::update(|cfg| cfg.cached_groups = to_save);
+        });
+        Some(fresh)
+    }
 }
