@@ -14,6 +14,10 @@ A lightweight browser selector that lets you pick Chrome, Edge, Brave, Vivaldi, 
 <img width="399" height="327" alt="image" src="https://github.com/user-attachments/assets/dff140a7-86d2-4863-9f5a-80fc130ee1fe" />
 
 
+## About This Project
+
+This app is an experiment in **vibe coding** — letting AI write virtually all of the code and treating the codebase as a black box, with minimal human review. The source is published as OSS as part of that experiment, so anyone can see what comes out of this style of development. Please keep this background in mind when reading the code or using the app.
+
 ## Features
 
 - **Browser picker dialog** — choose Chrome, Edge, Brave, Vivaldi, Firefox, or any installed browser on every link click
