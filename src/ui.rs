@@ -1,4 +1,4 @@
-use crate::browser::{self, BrowserGroup};
+use crate::browser::{self, Browser, BrowserGroup};
 use crate::config::{Config, Rule};
 use crate::registry;
 use crate::updater::{UpdateState, Updater};
@@ -51,13 +51,45 @@ fn setup_fonts(cc: &eframe::CreationContext) {
 
 // ─── ブラウザ選択ピッカー ────────────────────────────────────────
 
-pub fn show_picker(url: String) -> Result<()> {
+/// ルール → 既定ブラウザの順で、UI を出さずに自動起動すべきブラウザを返す
+fn find_auto_browser<'a>(groups: &'a [BrowserGroup], config: &Config, url: &str) -> Option<&'a Browser> {
+    config
+        .match_rule(url)
+        .into_iter()
+        .chain(config.default_browser.as_deref())
+        .find_map(|name| {
+            groups
+                .iter()
+                .find_map(|g| g.browsers.iter().find(|b| b.name == name))
+        })
+}
+
+/// URL を開く。常駐インスタンスがいれば転送し、いなければ自分が常駐になる
+pub fn open_url(url: String) -> Result<()> {
+    // 高速パス: 常駐インスタンスへ転送して即終了
+    if crate::ipc::send_open(&url) {
+        return Ok(());
+    }
+    match crate::ipc::try_bind() {
+        Some(listener) => show_picker(url, Some(listener)),
+        None => {
+            // ポートは塞がっているが転送に失敗した。起動直後の競合の
+            // 可能性があるので一度だけ再試行し、ダメなら常駐なしで表示する
+            if crate::ipc::send_open(&url) {
+                return Ok(());
+            }
+            show_picker(url, None)
+        }
+    }
+}
+
+fn show_picker(url: String, listener: Option<std::net::TcpListener>) -> Result<()> {
     let mut config = Config::load()?;
     let has_cache = !config.cached_groups.is_empty();
 
     // キャッシュがあれば即使用、なければ初回のみ同期検出してキャッシュ保存
     let groups = if has_cache {
-        let mut g = std::mem::take(&mut config.cached_groups);
+        let mut g = config.cached_groups.clone();
         if !config.browser_order.is_empty() {
             g.sort_by_key(|g| config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX));
         }
@@ -81,20 +113,12 @@ pub fn show_picker(url: String) -> Result<()> {
         }
     });
 
-    for g in &groups {
-        for b in &g.browsers {
-            if config.match_rule(&url).map_or(false, |n| n == b.name) {
-                return b.launch(&url);
-            }
-        }
+    if let Some(b) = find_auto_browser(&groups, &config, &url) {
+        return b.launch(&url);
     }
-    if let Some(default) = &config.default_browser {
-        for g in &groups {
-            if let Some(b) = g.browsers.iter().find(|b| &b.name == default) {
-                return b.launch(&url);
-            }
-        }
-    }
+
+    // UI が動いている間にバックグラウンドで更新チェックを済ませる
+    crate::updater::check_if_due();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("brows")
@@ -105,24 +129,100 @@ pub fn show_picker(url: String) -> Result<()> {
     if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
 
-    let open_settings = Arc::new(Mutex::new(false));
-    let open_settings_clone = open_settings.clone();
+    let resident = listener.is_some();
+    let incoming: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let incoming_clone = incoming.clone();
 
     eframe::run_native(
         "brows",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             setup_fonts(cc);
-            Box::new(PickerApp::new(url, groups, config, pending_groups, open_settings_clone))
+            let hwnd = win32_hwnd(cc);
+            if let Some(listener) = listener {
+                spawn_ipc_server(listener, cc.egui_ctx.clone(), incoming_clone, hwnd);
+            }
+            Box::new(PickerApp::new(url, groups, config, pending_groups, resident, incoming, hwnd))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if *open_settings.lock().unwrap() {
-        show_settings()?;
-    }
-
     Ok(())
+}
+
+fn win32_hwnd(cc: &eframe::CreationContext) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match cc.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
+/// 常駐モード: 別プロセスからのリクエストを受け付けるスレッドを起動する
+fn spawn_ipc_server(
+    listener: std::net::TcpListener,
+    ctx: egui::Context,
+    incoming: Arc<Mutex<Option<String>>>,
+    hwnd: Option<isize>,
+) {
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            match crate::ipc::read_request(stream) {
+                Some(crate::ipc::Request::Open(url)) => {
+                    crate::updater::check_if_due();
+                    // ルール・既定ブラウザにマッチしたら UI を出さず直接起動
+                    let auto = Config::load()
+                        .ok()
+                        .and_then(|cfg| find_auto_browser(&cfg.cached_groups, &cfg, &url).cloned());
+                    if let Some(b) = auto {
+                        let _ = b.launch(&url);
+                        continue;
+                    }
+                    *incoming.lock().unwrap() = Some(url);
+                    // 非表示ウィンドウは再描画イベントを受け取れないため、
+                    // egui のコマンドではなく Win32 API で直接再表示する
+                    if let Some(h) = hwnd {
+                        force_show(h);
+                    }
+                    ctx.request_repaint();
+                }
+                Some(crate::ipc::Request::Exit) => std::process::exit(0),
+                None => {}
+            }
+        }
+    });
+}
+
+/// 常駐ウィンドウを画面中央に再表示して前面に出す
+fn force_show(hwnd: isize) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, GetWindowRect, SetForegroundWindow, SetWindowPos, ShowWindow,
+        HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
+    };
+    let hwnd = HWND(hwnd);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+            let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let _ = SetWindowPos(
+                hwnd, HWND_TOPMOST,
+                (sw - w) / 2, (sh - h) / 2, 0, 0,
+                SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+        }
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+fn force_hide(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        let _ = ShowWindow(HWND(hwnd), SW_HIDE);
+    }
 }
 
 struct PickerApp {
@@ -137,11 +237,21 @@ struct PickerApp {
     drag_tgt: usize,
     row_rects: Vec<egui::Rect>,
     pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
-    open_settings: Arc<Mutex<bool>>,
+    resident: bool,
+    incoming: Arc<Mutex<Option<String>>>,
+    hwnd: Option<isize>,
 }
 
 impl PickerApp {
-    fn new(url: String, groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>, open_settings: Arc<Mutex<bool>>) -> Self {
+    fn new(
+        url: String,
+        groups: Vec<BrowserGroup>,
+        config: Config,
+        pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+        resident: bool,
+        incoming: Arc<Mutex<Option<String>>>,
+        hwnd: Option<isize>,
+    ) -> Self {
         let n = groups.len();
         Self {
             url, groups, config,
@@ -150,13 +260,23 @@ impl PickerApp {
             drag_src: None, drag_tgt: 0,
             row_rects: vec![egui::Rect::NOTHING; n],
             pending_groups,
-            open_settings,
+            resident,
+            incoming,
+            hwnd,
         }
     }
 
     fn save_order(&mut self) {
         self.config.browser_order = self.groups.iter().map(|g| g.exe_path.clone()).collect();
         let _ = self.config.save();
+    }
+
+    /// 選択・キャンセル後の片付け。常駐モードでは終了せず非表示にする
+    fn dismiss(&self, ctx: &egui::Context) {
+        match (self.resident, self.hwnd) {
+            (true, Some(h)) => force_hide(h),
+            _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
     }
 }
 
@@ -187,6 +307,35 @@ fn draw_drop_line(ui: &egui::Ui, x_min: f32, x_max: f32, y: f32) {
 impl eframe::App for PickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let lang = crate::lang::get();
+
+        if self.resident {
+            // 別プロセスから受信した URL に差し替えて状態をリセット
+            let new_url = self.incoming.lock().unwrap().take();
+            if let Some(url) = new_url {
+                self.url = url;
+                self.expanded = None;
+                self.selected = None;
+                self.drag_src = None;
+                // 設定画面でルール等が変わっているかもしれないので読み直す
+                if let Ok(cfg) = Config::load() {
+                    self.config = cfg;
+                }
+                // ブラウザ構成の変化も拾う
+                let pending = self.pending_groups.clone();
+                std::thread::spawn(move || {
+                    if let Ok(fresh) = browser::detect_grouped() {
+                        *pending.lock().unwrap() = Some(fresh);
+                    }
+                });
+            }
+            // ✕ボタンでは終了せず非表示にして常駐を続ける
+            if ctx.input(|i| i.viewport().close_requested()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if let Some(h) = self.hwnd {
+                    force_hide(h);
+                }
+            }
+        }
 
         // バックグラウンド検出が完了していたらキャッシュ更新
         if let Ok(mut lock) = self.pending_groups.try_lock() {
@@ -330,7 +479,7 @@ impl eframe::App for PickerApp {
                         self.expanded = if is_expanded { None } else { Some(gi) };
                     } else {
                         self.selected = Some((gi, 0));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.dismiss(ctx);
                     }
                 }
 
@@ -349,7 +498,7 @@ impl eframe::App for PickerApp {
                             egui::FontId::proportional(13.0), pvis.text_color());
                         if presp.clicked() {
                             self.selected = Some((gi, pi));
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            self.dismiss(ctx);
                         }
                     }
                 }
@@ -367,13 +516,14 @@ impl eframe::App for PickerApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button(lang.cancel).clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.dismiss(ctx);
                 }
                 if ui.add(egui::Button::new(
                     egui::RichText::new(format!("⚙ {}", lang.settings)).small()
                 ).frame(false)).clicked() {
-                    *self.open_settings.lock().unwrap() = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // 常駐したまま設定を開けるよう別プロセスで起動する
+                    crate::relaunch_settings();
+                    self.dismiss(ctx);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(tag) = &self.config.update_available {

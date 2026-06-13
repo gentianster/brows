@@ -539,12 +539,13 @@ dependencies = [
 
 [[package]]
 name = "brows"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "dirs-next",
  "eframe",
  "egui",
+ "raw-window-handle 0.6.2",
  "serde",
  "toml 0.8.23",
  "windows 0.56.0",

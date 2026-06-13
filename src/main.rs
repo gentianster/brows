@@ -3,6 +3,7 @@
 mod browser;
 mod config;
 mod icon;
+mod ipc;
 mod lang;
 mod registry;
 mod ui;
@@ -30,8 +31,9 @@ fn main() -> Result<()> {
             }
         }
         Some(url) if url.starts_with("http") => {
-            updater::check_if_due(); // ピッカー時は設定画面を開かないので config だけ更新
-            ui::show_picker(url.to_string())?;
+            // 更新チェックは常駐側で行う（転送だけで即終了するプロセスで
+            // 走らせるとチェック完了前に殺されてしまうため）
+            ui::open_url(url.to_string())?;
         }
         _ => {
             ui::show_settings()?;
@@ -41,7 +43,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn relaunch_settings() {
+pub fn relaunch_settings() {
     use std::os::windows::process::CommandExt;
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe)
