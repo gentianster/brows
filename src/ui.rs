@@ -1,4 +1,4 @@
-use crate::browser::{self, Browser, BrowserGroup};
+use crate::browser::{self, BackgroundDetect, Browser, BrowserGroup};
 use crate::config::{Config, Rule};
 use crate::registry;
 use crate::updater::{UpdateState, Updater};
@@ -92,34 +92,21 @@ pub fn run_resident() -> Result<()> {
 }
 
 fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> Result<()> {
-    let mut config = Config::load()?;
-    let has_cache = !config.cached_groups.is_empty();
+    let config = Config::load()?;
 
     // キャッシュがあれば即使用、なければ初回のみ同期検出してキャッシュ保存
-    let groups = if has_cache {
-        let mut g = config.cached_groups.clone();
-        if !config.browser_order.is_empty() {
-            g.sort_by_key(|g| config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX));
-        }
-        g
+    let mut groups = if !config.cached_groups.is_empty() {
+        config.cached_groups.clone()
     } else {
-        let mut g = browser::detect_grouped()?;
-        if !config.browser_order.is_empty() {
-            g.sort_by_key(|x| config.browser_order.iter().position(|o| o == &x.exe_path).unwrap_or(usize::MAX));
-        }
-        config.cached_groups = g.clone();
-        let _ = config.save();
+        let g = browser::detect_grouped()?;
+        let _ = Config::update(|cfg| cfg.cached_groups = g.clone());
         g
     };
+    config.sort_groups(&mut groups);
 
     // バックグラウンドで再検出してキャッシュを更新
-    let pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>> = Arc::new(Mutex::new(None));
-    let pending_clone = pending_groups.clone();
-    std::thread::spawn(move || {
-        if let Ok(fresh) = browser::detect_grouped() {
-            *pending_clone.lock().unwrap() = Some(fresh);
-        }
-    });
+    let detect = BackgroundDetect::new();
+    detect.spawn();
 
     if let Some(u) = &url {
         if let Some(b) = find_auto_browser(&groups, &config, u) {
@@ -162,7 +149,7 @@ fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> 
             if let Some(listener) = listener {
                 spawn_ipc_server(listener, cc.egui_ctx.clone(), incoming_clone, hwnd);
             }
-            Box::new(PickerApp::new(url.unwrap_or_default(), groups, config, pending_groups, resident, incoming, hwnd))
+            Box::new(PickerApp::new(url.unwrap_or_default(), groups, config, detect, resident, incoming, hwnd))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -256,7 +243,7 @@ struct PickerApp {
     drag_src: Option<usize>,
     drag_tgt: usize,
     row_rects: Vec<egui::Rect>,
-    pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+    detect: BackgroundDetect,
     resident: bool,
     incoming: Arc<Mutex<Option<String>>>,
     hwnd: Option<isize>,
@@ -270,7 +257,7 @@ impl PickerApp {
         url: String,
         groups: Vec<BrowserGroup>,
         config: Config,
-        pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+        detect: BackgroundDetect,
         resident: bool,
         incoming: Arc<Mutex<Option<String>>>,
         hwnd: Option<isize>,
@@ -283,7 +270,7 @@ impl PickerApp {
             icons: vec![None; n], icons_loaded: false,
             drag_src: None, drag_tgt: 0,
             row_rects: vec![egui::Rect::NOTHING; n],
-            pending_groups,
+            detect,
             resident,
             incoming,
             hwnd,
@@ -293,7 +280,8 @@ impl PickerApp {
 
     fn save_order(&mut self) {
         self.config.browser_order = self.groups.iter().map(|g| g.exe_path.clone()).collect();
-        let _ = self.config.save();
+        let order = self.config.browser_order.clone();
+        let _ = Config::update(|cfg| cfg.browser_order = order);
     }
 
     /// 選択・キャンセル後の片付け。常駐モードでは終了せず非表示にする
@@ -347,12 +335,7 @@ impl eframe::App for PickerApp {
                     self.config = cfg;
                 }
                 // ブラウザ構成の変化も拾う
-                let pending = self.pending_groups.clone();
-                std::thread::spawn(move || {
-                    if let Ok(fresh) = browser::detect_grouped() {
-                        *pending.lock().unwrap() = Some(fresh);
-                    }
-                });
+                self.detect.spawn();
             }
             // ✕ボタンでは終了せず非表示にして常駐を続ける
             if ctx.input(|i| i.viewport().close_requested()) {
@@ -375,28 +358,15 @@ impl eframe::App for PickerApp {
             }
         }
 
-        // バックグラウンド検出が完了していたらキャッシュ更新
-        if let Ok(mut lock) = self.pending_groups.try_lock() {
-            if let Some(fresh) = lock.take() {
-                let mut sorted = fresh.clone();
-                if !self.config.browser_order.is_empty() {
-                    sorted.sort_by_key(|g| self.config.browser_order.iter().position(|o| o == &g.exe_path).unwrap_or(usize::MAX));
-                }
-                let changed = sorted.len() != self.groups.len()
-                    || sorted.iter().zip(&self.groups).any(|(a, b)| a.exe_path != b.exe_path);
-                if changed {
-                    let n = sorted.len();
-                    self.groups = sorted;
-                    self.icons = vec![None; n];
-                    self.icons_loaded = false;
-                    self.row_rects = vec![egui::Rect::NOTHING; n];
-                }
-                std::thread::spawn(move || {
-                    if let Ok(mut cfg) = crate::config::Config::load() {
-                        cfg.cached_groups = fresh;
-                        let _ = cfg.save();
-                    }
-                });
+        // バックグラウンド検出が完了していたら表示を更新（キャッシュ保存は take 内で行われる）
+        if let Some(mut fresh) = self.detect.take() {
+            self.config.sort_groups(&mut fresh);
+            if browser::groups_differ(&fresh, &self.groups) {
+                let n = fresh.len();
+                self.groups = fresh;
+                self.icons = vec![None; n];
+                self.icons_loaded = false;
+                self.row_rects = vec![egui::Rect::NOTHING; n];
             }
         }
 
@@ -426,9 +396,11 @@ impl eframe::App for PickerApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(8.0);
-            let display_url = if self.url.len() > 50 {
-                format!("{}...", &self.url[..50])
-            } else { self.url.clone() };
+            // バイト位置で切ると多バイト文字の途中でパニックするため文字単位で切る
+            let display_url = match self.url.char_indices().nth(50) {
+                Some((idx, _)) => format!("{}...", &self.url[..idx]),
+                None => self.url.clone(),
+            };
             ui.label(egui::RichText::new(&display_url).weak().small());
             ui.add_space(12.0);
             ui.label(lang.which_browser);
@@ -501,12 +473,11 @@ impl eframe::App for PickerApp {
                     if let Some(src) = self.drag_src.take() {
                         let tgt = self.drag_tgt;
                         if tgt != src && tgt != src + 1 {
-                            let item = self.groups.remove(src);
                             let insert = if tgt > src { tgt - 1 } else { tgt };
+                            let item = self.groups.remove(src);
                             self.groups.insert(insert, item);
                             let icon = self.icons.remove(src);
-                            let icon_insert = if tgt > src { tgt - 1 } else { tgt };
-                            self.icons.insert(icon_insert, icon);
+                            self.icons.insert(insert, icon);
                             self.save_order();
                             drop_performed = true;
                         }
@@ -560,22 +531,20 @@ impl eframe::App for PickerApp {
                     egui::RichText::new(format!("⚙ {}", lang.settings)).small()
                 ).frame(false)).clicked() {
                     // 常駐したまま設定を開けるよう別プロセスで起動する
-                    crate::relaunch_settings();
+                    crate::util::spawn_self_detached(&[]);
                     self.dismiss(ctx);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(tag) = &self.config.update_available {
-                        if crate::updater::is_newer(tag) {
+                    match &self.config.update_available {
+                        Some(tag) if crate::updater::is_newer(tag) => {
                             ui.label(egui::RichText::new(format!("⬆ {} {}", tag, lang.update_suffix))
                                 .color(egui::Color32::from_rgb(80, 180, 80))
                                 .small());
-                        } else {
+                        }
+                        _ => {
                             ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                                 .weak().small());
                         }
-                    } else {
-                        ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .weak().small());
                     }
                 });
             });
@@ -594,24 +563,18 @@ impl eframe::App for PickerApp {
 
 pub fn show_settings() -> Result<()> {
     let lang = crate::lang::get();
-    let mut config = Config::load().unwrap_or_default();
+    let config = Config::load().unwrap_or_default();
 
     let groups = if !config.cached_groups.is_empty() {
         config.cached_groups.clone()
     } else {
         let g = browser::detect_grouped().unwrap_or_default();
-        config.cached_groups = g.clone();
-        let _ = config.save();
+        let _ = Config::update(|cfg| cfg.cached_groups = g.clone());
         g
     };
 
-    let pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>> = Arc::new(Mutex::new(None));
-    let pending_clone = pending_groups.clone();
-    std::thread::spawn(move || {
-        if let Ok(fresh) = browser::detect_grouped() {
-            *pending_clone.lock().unwrap() = Some(fresh);
-        }
-    });
+    let detect = BackgroundDetect::new();
+    detect.spawn();
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(lang.window_title_settings)
@@ -626,7 +589,7 @@ pub fn show_settings() -> Result<()> {
         options,
         Box::new(move |cc| {
             setup_fonts(cc);
-            Box::new(SettingsApp::new(groups, config, pending_groups))
+            Box::new(SettingsApp::new(groups, config, detect))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -646,12 +609,12 @@ struct SettingsApp {
     icons: HashMap<String, egui::TextureHandle>,
     icons_loaded: bool,
     rule_search: String,
-    pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>,
+    detect: BackgroundDetect,
 }
 
 impl SettingsApp {
-    fn new(groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>) -> Self {
-        let registered = is_registered();
+    fn new(groups: Vec<BrowserGroup>, config: Config, detect: BackgroundDetect) -> Self {
+        let registered = registry::is_registered();
         let startup = registry::is_startup_registered();
         let updater = Updater::from_config(&config);
         let new_browser = groups.first()
@@ -663,8 +626,14 @@ impl SettingsApp {
             new_pattern: String::new(), new_browser,
             icons: HashMap::new(), icons_loaded: false,
             rule_search: String::new(),
-            pending_groups,
+            detect,
         }
+    }
+
+    /// ルール変更を保存する（他フィールドを巻き戻さないよう rules だけ書く）
+    fn save_rules(&self) {
+        let rules = self.config.rules.clone();
+        let _ = Config::update(|cfg| cfg.rules = rules);
     }
 
     fn browser_names(&self) -> Vec<String> {
@@ -678,44 +647,16 @@ impl SettingsApp {
     }
 }
 
-/// 常駐ピッカーを別プロセスで起動する（既に常駐がいれば即終了するので無害）
-fn spawn_resident() {
-    use std::os::windows::process::CommandExt;
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe)
-            .arg("--resident")
-            .creation_flags(0x00000008) // DETACHED_PROCESS
-            .spawn();
-    }
-}
-
-fn is_registered() -> bool {
-    use winreg::enums::*;
-    use winreg::RegKey;
-    RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey("SOFTWARE\\Clients\\StartMenuInternet\\brows")
-        .is_ok()
-}
-
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let lang = crate::lang::get();
 
-        if let Ok(mut lock) = self.pending_groups.try_lock() {
-            if let Some(fresh) = lock.take() {
-                let changed = fresh.len() != self.groups.len()
-                    || fresh.iter().zip(&self.groups).any(|(a, b)| a.exe_path != b.exe_path);
-                if changed {
-                    self.groups = fresh.clone();
-                    self.icons.clear();
-                    self.icons_loaded = false;
-                }
-                std::thread::spawn(move || {
-                    if let Ok(mut cfg) = crate::config::Config::load() {
-                        cfg.cached_groups = fresh;
-                        let _ = cfg.save();
-                    }
-                });
+        // バックグラウンド検出が完了していたら表示を更新（キャッシュ保存は take 内で行われる）
+        if let Some(fresh) = self.detect.take() {
+            if browser::groups_differ(&fresh, &self.groups) {
+                self.groups = fresh;
+                self.icons.clear();
+                self.icons_loaded = false;
             }
         }
 
@@ -826,7 +767,8 @@ impl eframe::App for SettingsApp {
                         self.startup = startup;
                         if startup {
                             // 次のログオンを待たず、いますぐ常駐を開始する
-                            spawn_resident();
+                            // （既に常駐がいれば即終了するので無害）
+                            crate::util::spawn_self_detached(&["--resident"]);
                         }
                     }
                 }
@@ -847,7 +789,7 @@ impl eframe::App for SettingsApp {
                     if !path.exists() { let _ = std::fs::write(&path, ""); }
                     let _ = std::process::Command::new("cmd")
                         .args(["/c", "start", "", &path.to_string_lossy()])
-                        .creation_flags(0x08000000)
+                        .creation_flags(crate::util::CREATE_NO_WINDOW)
                         .spawn();
                 }
             });
@@ -892,7 +834,7 @@ impl eframe::App for SettingsApp {
             }
             if let Some(i) = delete_idx {
                 self.config.rules.remove(i);
-                let _ = self.config.save();
+                self.save_rules();
             }
 
             ui.add_space(4.0);
@@ -926,7 +868,7 @@ impl eframe::App for SettingsApp {
                         pattern: self.new_pattern.clone(),
                         browser: self.new_browser.clone(),
                     });
-                    let _ = self.config.save();
+                    self.save_rules();
                     self.new_pattern.clear();
                 }
             });

@@ -8,6 +8,7 @@ mod lang;
 mod registry;
 mod ui;
 mod updater;
+mod util;
 
 use anyhow::Result;
 use std::env;
@@ -18,11 +19,11 @@ fn main() -> Result<()> {
     match args.get(1).map(|s| s.as_str()) {
         Some("--register") => {
             registry::register()?;
-            relaunch_settings();
+            util::spawn_self_detached(&[]);
         }
         Some("--unregister") => {
             registry::unregister()?;
-            relaunch_settings();
+            util::spawn_self_detached(&[]);
         }
         Some("--resident") => {
             // スタートアップ登録から呼ばれる。ウィンドウを作らず（非表示のまま）常駐する
@@ -45,13 +46,4 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-pub fn relaunch_settings() {
-    use std::os::windows::process::CommandExt;
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe)
-            .creation_flags(0x00000008) // DETACHED_PROCESS
-            .spawn();
-    }
 }

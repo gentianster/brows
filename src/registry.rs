@@ -58,6 +58,13 @@ pub fn register() -> Result<()> {
     Ok(())
 }
 
+/// ブラウザとして登録済みかどうか
+pub fn is_registered() -> bool {
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(format!("SOFTWARE\\Clients\\StartMenuInternet\\{}", APP_NAME))
+        .is_ok()
+}
+
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
 /// ログオン時に常駐ピッカーを起動するスタートアップ登録（HKCU なので管理者権限不要）

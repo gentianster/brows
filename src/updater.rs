@@ -1,7 +1,7 @@
+use crate::util::{json_str, CREATE_NO_WINDOW};
 use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
 
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 const REPO: &str = "gentianster/brows";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL_SECS: u64 = 86400; // 1日
@@ -31,24 +31,7 @@ impl Updater {
         let state = Arc::new(Mutex::new(initial));
 
         if is_due(config.last_update_check) {
-            let state_clone = state.clone();
-            std::thread::spawn(move || {
-                let now = unix_now();
-                let mut cfg = crate::config::Config::load().unwrap_or_default();
-                cfg.last_update_check = Some(now);
-                match fetch_latest_tag() {
-                    Some(tag) if is_newer(&tag) => {
-                        cfg.update_available = Some(tag.clone());
-                        *state_clone.lock().unwrap() = UpdateState::Available(tag);
-                    }
-                    Some(_) => {
-                        cfg.update_available = None;
-                        *state_clone.lock().unwrap() = UpdateState::UpToDate;
-                    }
-                    None => {}
-                }
-                let _ = cfg.save();
-            });
+            spawn_check(Some(state.clone()));
         }
 
         Self { state }
@@ -86,7 +69,7 @@ impl Updater {
                 "@echo off\r\n",
                 "timeout /t 2 /nobreak >nul\r\n",
                 // 現在の exe をバックアップに移動。失敗したら新ファイルを消して終了
-                "move /y \"{old}\" \"{backup}\"\r\n",
+                "move /y \"{cur}\" \"{backup}\"\r\n",
                 "if errorlevel 1 (\r\n",
                 "  del \"{new}\" 2>nul\r\n",
                 "  del \"%~f0\"\r\n",
@@ -106,7 +89,6 @@ impl Updater {
             cur = current_exe.display(),
             backup = old_exe.display(),
             new = tmp_exe.display(),
-            old = current_exe.display(),
         );
         let _ = std::fs::write(&bat, script);
         let _ = std::process::Command::new("cmd")
@@ -123,19 +105,33 @@ pub fn check_if_due() {
         Ok(c) => c,
         Err(_) => return,
     };
-    if !is_due(config.last_update_check) {
-        return;
+    if is_due(config.last_update_check) {
+        spawn_check(None);
     }
+}
+
+/// バックグラウンドで最新タグを取得し config に保存する。
+/// state が渡されていれば（設定画面）UI 表示用の状態も更新する
+fn spawn_check(state: Option<Arc<Mutex<UpdateState>>>) {
     std::thread::spawn(move || {
         let now = unix_now();
-        let mut cfg = crate::config::Config::load().unwrap_or_default();
-        cfg.last_update_check = Some(now);
-        match fetch_latest_tag() {
-            Some(tag) if is_newer(&tag) => cfg.update_available = Some(tag),
-            Some(_) => cfg.update_available = None,
-            None => {} // API 失敗時は前回の結果を維持
+        // ネットワークアクセスを終えてから config を短時間だけロックして書く
+        let latest = fetch_latest_tag();
+        let _ = crate::config::Config::update(|cfg| {
+            cfg.last_update_check = Some(now);
+            match &latest {
+                Some(tag) if is_newer(tag) => cfg.update_available = Some(tag.clone()),
+                Some(_) => cfg.update_available = None,
+                None => {} // API 失敗時は前回の結果を維持
+            }
+        });
+        if let Some(state) = state {
+            match latest {
+                Some(tag) if is_newer(&tag) => *state.lock().unwrap() = UpdateState::Available(tag),
+                Some(_) => *state.lock().unwrap() = UpdateState::UpToDate,
+                None => {}
+            }
         }
-        let _ = cfg.save();
     });
 }
 
@@ -205,16 +201,4 @@ pub fn is_newer(tag: &str) -> bool {
         s.trim_start_matches('v').split('.').filter_map(|p| p.parse().ok()).collect()
     };
     parse(tag) > parse(CURRENT)
-}
-
-fn json_str(text: &str, key: &str) -> Option<String> {
-    let search = format!("\"{}\":", key);
-    let pos = text.find(&search)?;
-    let after = text[pos + search.len()..].trim_start();
-    if after.starts_with('"') {
-        let end = after[1..].find('"')?;
-        Some(after[1..end + 1].to_string())
-    } else {
-        None
-    }
 }
