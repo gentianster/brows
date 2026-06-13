@@ -24,6 +24,10 @@ fn main() -> Result<()> {
             registry::unregister()?;
             relaunch_settings();
         }
+        Some("--resident") => {
+            // スタートアップ登録から呼ばれる。ウィンドウを作らず（非表示のまま）常駐する
+            ui::run_resident()?;
+        }
         Some("--list") => {
             let browsers = browser::detect()?;
             for b in &browsers {

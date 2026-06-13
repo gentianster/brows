@@ -58,6 +58,30 @@ pub fn register() -> Result<()> {
     Ok(())
 }
 
+const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+/// ログオン時に常駐ピッカーを起動するスタートアップ登録（HKCU なので管理者権限不要）
+pub fn register_startup() -> Result<()> {
+    let exe_path = std::env::current_exe()?.to_string_lossy().to_string();
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY)?;
+    key.set_value(APP_NAME, &format!("\"{}\" --resident", exe_path))?;
+    Ok(())
+}
+
+/// スタートアップ登録を解除する
+pub fn unregister_startup() -> Result<()> {
+    let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE)?;
+    key.delete_value(APP_NAME)?;
+    Ok(())
+}
+
+pub fn is_startup_registered() -> bool {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(RUN_KEY)
+        .and_then(|k| k.get_value::<String, _>(APP_NAME))
+        .is_ok()
+}
+
 /// UAC 昇格して brows.exe <arg> を再実行する
 pub fn elevate(arg: &str) {
     use std::ffi::OsStr;
