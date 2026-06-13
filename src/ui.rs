@@ -71,19 +71,27 @@ pub fn open_url(url: String) -> Result<()> {
         return Ok(());
     }
     match crate::ipc::try_bind() {
-        Some(listener) => show_picker(url, Some(listener)),
+        Some(listener) => show_picker(Some(url), Some(listener)),
         None => {
             // ポートは塞がっているが転送に失敗した。起動直後の競合の
             // 可能性があるので一度だけ再試行し、ダメなら常駐なしで表示する
             if crate::ipc::send_open(&url) {
                 return Ok(());
             }
-            show_picker(url, None)
+            show_picker(Some(url), None)
         }
     }
 }
 
-fn show_picker(url: String, listener: Option<std::net::TcpListener>) -> Result<()> {
+/// スタートアップ登録から呼ばれる。ウィンドウを表示せずに常駐だけ始める
+pub fn run_resident() -> Result<()> {
+    match crate::ipc::try_bind() {
+        Some(listener) => show_picker(None, Some(listener)),
+        None => Ok(()), // 既に常駐がいる（またはポートが使えない）ので何もしない
+    }
+}
+
+fn show_picker(url: Option<String>, listener: Option<std::net::TcpListener>) -> Result<()> {
     let mut config = Config::load()?;
     let has_cache = !config.cached_groups.is_empty();
 
@@ -113,19 +121,31 @@ fn show_picker(url: String, listener: Option<std::net::TcpListener>) -> Result<(
         }
     });
 
-    if let Some(b) = find_auto_browser(&groups, &config, &url) {
-        return b.launch(&url);
+    if let Some(u) = &url {
+        if let Some(b) = find_auto_browser(&groups, &config, u) {
+            return b.launch(u);
+        }
     }
 
     // UI が動いている間にバックグラウンドで更新チェックを済ませる
     crate::updater::check_if_due();
 
+    // URL なし（スタートアップ起動）は非表示で常駐する。eframe は初回描画後に
+    // 無条件で set_visible(true) するため、画面外に配置した上で
+    // 初回描画後のフレームで Win32 により隠す（PickerApp::hide_countdown）
+    let start_hidden = url.is_none();
+    let position = if start_hidden {
+        egui::pos2(-30000.0, -30000.0)
+    } else {
+        center_pos(400.0, 300.0)
+    };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("brows")
         .with_inner_size([400.0, 300.0])
-        .with_position(center_pos(400.0, 300.0))
+        .with_position(position)
         .with_resizable(false)
-        .with_always_on_top();
+        .with_always_on_top()
+        .with_visible(!start_hidden);
     if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
 
@@ -142,7 +162,7 @@ fn show_picker(url: String, listener: Option<std::net::TcpListener>) -> Result<(
             if let Some(listener) = listener {
                 spawn_ipc_server(listener, cc.egui_ctx.clone(), incoming_clone, hwnd);
             }
-            Box::new(PickerApp::new(url, groups, config, pending_groups, resident, incoming, hwnd))
+            Box::new(PickerApp::new(url.unwrap_or_default(), groups, config, pending_groups, resident, incoming, hwnd))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -240,6 +260,9 @@ struct PickerApp {
     resident: bool,
     incoming: Arc<Mutex<Option<String>>>,
     hwnd: Option<isize>,
+    /// スタートアップ起動時、eframe が初回描画後に強制表示するのを打ち消す
+    /// ための残りフレーム数（0 になったフレームで Win32 により隠す）
+    hide_countdown: u8,
 }
 
 impl PickerApp {
@@ -253,6 +276,7 @@ impl PickerApp {
         hwnd: Option<isize>,
     ) -> Self {
         let n = groups.len();
+        let hide_countdown = if url.is_empty() { 2 } else { 0 };
         Self {
             url, groups, config,
             expanded: None, selected: None,
@@ -263,6 +287,7 @@ impl PickerApp {
             resident,
             incoming,
             hwnd,
+            hide_countdown,
         }
     }
 
@@ -316,6 +341,7 @@ impl eframe::App for PickerApp {
                 self.expanded = None;
                 self.selected = None;
                 self.drag_src = None;
+                self.hide_countdown = 0; // 表示が確定したので隠す予約を取り消す
                 // 設定画面でルール等が変わっているかもしれないので読み直す
                 if let Ok(cfg) = Config::load() {
                     self.config = cfg;
@@ -334,6 +360,18 @@ impl eframe::App for PickerApp {
                 if let Some(h) = self.hwnd {
                     force_hide(h);
                 }
+            }
+        }
+
+        // スタートアップ起動: eframe による初回描画後の強制表示が済んでから隠す
+        if self.hide_countdown > 0 && self.url.is_empty() {
+            self.hide_countdown -= 1;
+            if self.hide_countdown == 0 {
+                if let Some(h) = self.hwnd {
+                    force_hide(h);
+                }
+            } else {
+                ctx.request_repaint();
             }
         }
 
@@ -599,6 +637,7 @@ pub fn show_settings() -> Result<()> {
 struct SettingsApp {
     groups: Vec<BrowserGroup>,
     registered: bool,
+    startup: bool,
     status_msg: Option<String>,
     updater: Updater,
     config: Config,
@@ -613,13 +652,14 @@ struct SettingsApp {
 impl SettingsApp {
     fn new(groups: Vec<BrowserGroup>, config: Config, pending_groups: Arc<Mutex<Option<Vec<BrowserGroup>>>>) -> Self {
         let registered = is_registered();
+        let startup = registry::is_startup_registered();
         let updater = Updater::from_config(&config);
         let new_browser = groups.first()
             .and_then(|g| g.browsers.first())
             .map(|b| b.name.clone())
             .unwrap_or_default();
         Self {
-            groups, registered, status_msg: None, updater, config,
+            groups, registered, startup, status_msg: None, updater, config,
             new_pattern: String::new(), new_browser,
             icons: HashMap::new(), icons_loaded: false,
             rule_search: String::new(),
@@ -635,6 +675,17 @@ impl SettingsApp {
                 g.browsers.iter().map(|b| b.name.clone()).collect()
             }
         }).collect()
+    }
+}
+
+/// 常駐ピッカーを別プロセスで起動する（既に常駐がいれば即終了するので無害）
+fn spawn_resident() {
+    use std::os::windows::process::CommandExt;
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe)
+            .arg("--resident")
+            .creation_flags(0x00000008) // DETACHED_PROCESS
+            .spawn();
     }
 }
 
@@ -761,6 +812,26 @@ impl eframe::App for SettingsApp {
             if let Some(msg) = &self.status_msg {
                 ui.label(egui::RichText::new(msg).weak().small());
             }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let mut startup = self.startup;
+                if ui.checkbox(&mut startup, egui::RichText::new(lang.startup_checkbox).small()).changed() {
+                    let result = if startup {
+                        registry::register_startup()
+                    } else {
+                        registry::unregister_startup()
+                    };
+                    if result.is_ok() {
+                        self.startup = startup;
+                        if startup {
+                            // 次のログオンを待たず、いますぐ常駐を開始する
+                            spawn_resident();
+                        }
+                    }
+                }
+                ui.label(egui::RichText::new(lang.startup_hint).weak().small());
+            });
 
             ui.add_space(6.0);
             ui.separator();

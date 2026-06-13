@@ -21,6 +21,9 @@ pub struct Strings {
     pub btn_unregister: &'static str,
     pub register_success_hint: &'static str,
     pub unregister_success: &'static str,
+    // Startup
+    pub startup_checkbox: &'static str,
+    pub startup_hint: &'static str,
     // URL Rules
     pub section_url_rules: &'static str,
     pub btn_open_config: &'static str,
@@ -52,6 +55,8 @@ static JA: Strings = Strings {
     btn_unregister: "解除",
     register_success_hint: "設定 → アプリ → 既定のアプリ から brows を選択してください。",
     unregister_success: "登録を解除しました。",
+    startup_checkbox: "Windows 起動時に常駐する",
+    startup_hint: "ログオン直後からピッカーを即時表示できます",
     section_url_rules: "URL ルール",
     btn_open_config: "設定ファイルを開く",
     no_rules: "ルールなし",
@@ -81,6 +86,8 @@ static EN: Strings = Strings {
     btn_unregister: "Unregister",
     register_success_hint: "Go to Settings → Apps → Default apps and select brows.",
     unregister_success: "Unregistered successfully.",
+    startup_checkbox: "Start with Windows",
+    startup_hint: "Shows the picker instantly right after logon",
     section_url_rules: "URL Rules",
     btn_open_config: "Open config file",
     no_rules: "No rules",
