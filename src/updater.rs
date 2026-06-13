@@ -103,7 +103,9 @@ impl Updater {
                 "  del \"%~f0\"\r\n",
                 "  exit /b 1\r\n",
                 ")\r\n",
-                "start \"\" \"{cur}\"\r\n",
+                // 更新後もトレイ常駐を維持する（引数なしだと設定画面だけ開いて
+                // 常駐が切れてしまうため --resident で再起動する）
+                "start \"\" \"{cur}\" --resident\r\n",
                 "del \"%~f0\""
             ),
             cur = current_exe.display(),

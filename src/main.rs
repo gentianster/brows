@@ -41,6 +41,13 @@ fn main() -> Result<()> {
             ui::open_url(url.to_string())?;
         }
         _ => {
+            // どの起動経路でもトレイ常駐を確保する（--resident は冪等：既に常駐が
+            // いれば即終了する）。ただし管理者権限のときは常駐を作らない
+            // （昇格した常駐は通常権限のリンク起動からパイプ越しに扱いにくく、
+            // --register 直後などに不整合を生むため）。
+            if !util::is_elevated() {
+                util::spawn_self_detached(&["--resident"]);
+            }
             ui::show_settings()?;
         }
     }
