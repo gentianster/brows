@@ -3,6 +3,8 @@ pub struct Strings {
     pub which_browser: &'static str,
     pub cancel: &'static str,
     pub settings: &'static str,
+    // Tray
+    pub tray_settings: &'static str,
     // Update
     pub update_suffix: &'static str,
     pub update_error_prefix: &'static str,
@@ -43,6 +45,7 @@ static JA: Strings = Strings {
     which_browser: "どのブラウザで開きますか？",
     cancel: "キャンセル",
     settings: "設定",
+    tray_settings: "設定を開く",
     update_suffix: "公開中",
     update_error_prefix: "更新エラー: ",
     up_to_date: "最新バージョン",
@@ -77,6 +80,7 @@ static EN: Strings = Strings {
     which_browser: "Open with which browser?",
     cancel: "Cancel",
     settings: "Settings",
+    tray_settings: "Open settings",
     update_suffix: "available",
     update_error_prefix: "Update error: ",
     up_to_date: "Up to date",
