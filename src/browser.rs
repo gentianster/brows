@@ -26,12 +26,12 @@ impl Browser {
 /// `"C:\path\browser.exe" "%1"` 形式から exe パスだけを取り出す
 fn extract_exe(cmd: &str) -> String {
     let cmd = cmd.trim();
-    if cmd.starts_with('"') {
-        cmd[1..].splitn(2, '"').next().unwrap_or("").to_string()
+    if let Some(quoted) = cmd.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or("").to_string()
     } else if let Some(pos) = cmd.to_lowercase().find(".exe") {
         cmd[..pos + 4].to_string()
     } else {
-        cmd.splitn(2, ' ').next().unwrap_or(cmd).to_string()
+        cmd.split(' ').next().unwrap_or(cmd).to_string()
     }
 }
 
@@ -190,7 +190,7 @@ pub fn detect() -> Result<Vec<Browser>> {
         let path = std::path::Path::new(&b.exe_path);
         let file_name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
         !b.exe_path.to_lowercase().ends_with("iexplore.exe")
-            && self_exe_name.as_deref().map_or(true, |s| file_name.as_deref() != Some(s))
+            && self_exe_name.as_deref().is_none_or(|s| file_name.as_deref() != Some(s))
     });
 
     Ok(browsers)

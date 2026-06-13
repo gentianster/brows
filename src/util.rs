@@ -19,10 +19,7 @@ pub fn json_str(text: &str, key: &str) -> Option<String> {
     let search = format!("\"{}\":", key);
     let pos = text.find(&search)?;
     let after = text[pos + search.len()..].trim_start();
-    if after.starts_with('"') {
-        let end = after[1..].find('"')?;
-        Some(after[1..end + 1].to_string())
-    } else {
-        None
-    }
+    let value = after.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].to_string())
 }
