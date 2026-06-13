@@ -30,13 +30,24 @@ cargo build --release
 ```
 src/
 ├── main.rs       エントリーポイント（サブコマンド振り分け）
-├── browser.rs    ブラウザ検出（レジストリ + Chrome プロファイル）
+├── browser.rs    ブラウザ検出（レジストリ + Chrome プロファイル）、バックグラウンド再検出
 ├── icon.rs       Windows Shell API でブラウザアイコンを取得
 ├── ipc.rs        常駐インスタンスへの URL 転送（ループバック TCP 127.0.0.1:48693）
 ├── registry.rs   Windows レジストリへの登録・解除
 ├── config.rs     設定ファイル（TOML）の読み書き
-└── ui.rs         egui による UI（ピッカー・設定画面）
+├── lang.rs       UI 文言（日本語/英語）
+├── updater.rs    GitHub Releases からの自動更新
+├── util.rs       共有ヘルパー（json_str・detached spawn・プロセス作成フラグ）
+└── ui/
+    ├── mod.rs      共通セットアップ（アプリアイコン・日本語フォント）
+    ├── picker.rs   ブラウザ選択ピッカー（常駐・IPC サーバー含む）
+    ├── settings.rs 設定画面（登録・URL ルール・更新）
+    └── win32.rs    egui で扱えないウィンドウ操作（再表示・非表示・中央配置）
 ```
+
+設定（config.toml）への書き込みは `Config::update` 経由で行うこと。
+in-memory の `Config` を直接 `save()` すると、バックグラウンドスレッド
+（更新チェック・ブラウザ再検出）の書き込みと競合してフィールドを巻き戻す。
 
 ## 常駐動作
 
