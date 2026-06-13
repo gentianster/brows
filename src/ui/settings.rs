@@ -188,7 +188,14 @@ impl eframe::App for SettingsApp {
                     let update_state = self.updater.state.lock().unwrap().clone();
                     match &update_state {
                         UpdateState::UpToDate => {
+                            if ui.small_button(lang.btn_check_update).clicked() {
+                                self.updater.check_now();
+                            }
                             ui.label(egui::RichText::new(lang.up_to_date).weak().small());
+                        }
+                        UpdateState::Checking => {
+                            ui.label(egui::RichText::new(lang.checking).weak().small());
+                            ctx.request_repaint();
                         }
                         UpdateState::Available(tag) => {
                             if ui.small_button(lang.btn_download).clicked() {
@@ -207,6 +214,9 @@ impl eframe::App for SettingsApp {
                                 .color(egui::Color32::from_rgb(80, 180, 80)).small());
                         }
                         UpdateState::Error(e) => {
+                            if ui.small_button(lang.btn_check_update).clicked() {
+                                self.updater.check_now();
+                            }
                             ui.label(egui::RichText::new(format!("{}{}", lang.update_error_prefix, e))
                                 .color(egui::Color32::from_rgb(200, 80, 80)).small());
                         }
