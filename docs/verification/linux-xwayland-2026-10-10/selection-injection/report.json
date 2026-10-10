@@ -1,0 +1,21 @@
+{
+  "session": "wayland",
+  "checks": [
+    {
+      "name": "first_visible",
+      "passed": true
+    },
+    {
+      "name": "first_focus",
+      "passed": true
+    }
+  ],
+  "screenshots": [
+    "01-picker-japanese.png",
+    "02-profiles-japanese.png"
+  ],
+  "binary_sha256": "68a7fa1dc8b2cfcce615256233de21a3ef493a3223b784902882fec394446a3f",
+  "error": "Timed out: first synthetic launch",
+  "build_stage": "initial port before appearance fixes",
+  "publication": "Local fixture paths, PIDs and XIDs omitted; check results retained."
+}

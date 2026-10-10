@@ -1,0 +1,2 @@
+["--fixture-fixed", "two words", "https://example.invalid/manual/first", "--profile-directory=Default"]
+["--fixture-fixed", "two words", "https://example.invalid/manual/second", "--profile-directory=Profile 1"]

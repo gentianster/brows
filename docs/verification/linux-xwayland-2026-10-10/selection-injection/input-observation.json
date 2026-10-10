@@ -1,0 +1,14 @@
+{
+  "source": "XQueryPointer diagnostics from initial port build before appearance fixes",
+  "XTestFakeMotionEvent_returned_success": true,
+  "expected_owned_client_coordinates": [
+    400,
+    178
+  ],
+  "actual_owned_client_coordinates": [
+    -11,
+    1018
+  ],
+  "pointer_mask_after_motion": 16,
+  "result": "The row stayed collapsed and no mock launch occurred; later harness revisions stop before button input when motion does not reach the owned target."
+}

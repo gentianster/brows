@@ -1,0 +1,78 @@
+{
+  "session": "wayland",
+  "checks": [
+    {
+      "name": "first_visible",
+      "passed": true
+    },
+    {
+      "name": "first_focus",
+      "passed": true
+    },
+    {
+      "name": "hidden_retained",
+      "passed": true
+    },
+    {
+      "name": "same_window_resurfaced",
+      "passed": true
+    },
+    {
+      "name": "resurface_focus",
+      "passed": true
+    },
+    {
+      "name": "close_request_did_not_launch_browser",
+      "passed": true
+    },
+    {
+      "name": "settings_japanese",
+      "passed": true
+    },
+    {
+      "name": "no_default_or_autostart_change",
+      "passed": true
+    },
+    {
+      "name": "initial_auto_rule_retains_resident",
+      "passed": true
+    },
+    {
+      "name": "initial_auto_rule_args",
+      "passed": true
+    },
+    {
+      "name": "initial_auto_rule_same_window_resurfaces",
+      "passed": true
+    },
+    {
+      "name": "initial_auto_rule_resurface_focus",
+      "passed": true
+    },
+    {
+      "name": "close_request_hides_retains_same_window",
+      "passed": true
+    },
+    {
+      "name": "auto_rule_no_default_or_autostart_change",
+      "passed": true
+    }
+  ],
+  "screenshots": [
+    "01-picker-japanese.png",
+    "03-retained-resurface.png",
+    "06-auto-rule-resurface.png"
+  ],
+  "mode": "lifecycle-only",
+  "unverified": [
+    "GUI browser/profile selection",
+    "FIFO selected launch order",
+    "Cancel button input; WM_DELETE_WINDOW exercises the same dismiss path instead"
+  ],
+  "binary_sha256": "68a7fa1dc8b2cfcce615256233de21a3ef493a3223b784902882fec394446a3f",
+  "build_stage": "initial port before appearance fixes",
+  "publication": "Local fixture paths, PIDs and XIDs omitted; check results retained.",
+  "local_only_screenshots": [
+    "settings capture omitted because it contains a temporary fixture path"
+  ]
+}
