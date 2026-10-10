@@ -4,7 +4,7 @@ use super::window::{center_pos, force_hide, force_show, window_of, NativeWindow}
 use super::{app_icon, native_options, setup_fonts};
 use crate::browser::{self, BackgroundDetect, Browser, BrowserGroup};
 use crate::config::Config;
-use crate::url_queue::UrlQueue;
+use crate::url_queue::{PendingUrl, UrlQueue};
 use anyhow::Result;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,20 @@ fn find_auto_browser<'a>(
         })
 }
 
+fn pending_after_auto_launch(url: String, outcome: Option<Result<()>>) -> Option<PendingUrl> {
+    match outcome {
+        Some(Ok(())) => None,
+        Some(Err(error)) => Some(PendingUrl {
+            url,
+            launch_error: Some(error.to_string()),
+        }),
+        None => Some(PendingUrl {
+            url,
+            launch_error: None,
+        }),
+    }
+}
+
 /// URL を開く。常駐インスタンスがいれば転送し、いなければ自分が常駐になる
 pub fn open_url(url: String) -> Result<()> {
     // 高速パス: 常駐インスタンスへ転送して即終了
@@ -36,7 +50,7 @@ pub fn open_url(url: String) -> Result<()> {
         Some(listener) => show_picker(Some(url), Some(listener)),
         None => {
             // Opening a second picker would bypass the resident queue and singleton.
-            if crate::ipc::send_open_wait(&url) {
+            if crate::ipc::send_open_wait(&url)? {
                 return Ok(());
             }
             anyhow::bail!("resident picker could not acknowledge the URL; retry opening it")
@@ -52,7 +66,7 @@ pub fn run_resident() -> Result<()> {
     }
 }
 
-fn show_picker(mut url: Option<String>, listener: Option<crate::ipc::PipeServer>) -> Result<()> {
+fn show_picker(url: Option<String>, listener: Option<crate::ipc::PipeServer>) -> Result<()> {
     let config = Config::load()?;
 
     // キャッシュがあれば即使用、なければ初回のみ同期検出してキャッシュ保存
@@ -69,14 +83,11 @@ fn show_picker(mut url: Option<String>, listener: Option<crate::ipc::PipeServer>
     let detect = BackgroundDetect::new();
     detect.spawn();
 
-    if let Some(u) = &url {
-        if let Some(b) = find_auto_browser(&groups, &config, u) {
-            if b.launch(u).is_ok() {
-                // A first rule match must not terminate the only resident instance.
-                url = None;
-            }
-        }
-    }
+    // A first rule match must not terminate the only resident instance.
+    let request = url.and_then(|url| {
+        let outcome = find_auto_browser(&groups, &config, &url).map(|b| b.launch(&url));
+        pending_after_auto_launch(url, outcome)
+    });
 
     // UI が動いている間にバックグラウンドで更新チェックを済ませる
     crate::updater::check_if_due();
@@ -84,7 +95,7 @@ fn show_picker(mut url: Option<String>, listener: Option<crate::ipc::PipeServer>
     // URL なし（スタートアップ起動）は非表示で常駐する。eframe は初回描画後に
     // 無条件で set_visible(true) するため、画面外に配置した上で
     // 初回描画後のフレームで Win32 により隠す（PickerApp::hide_countdown）
-    let start_hidden = url.is_none();
+    let start_hidden = request.is_none();
     let position = if start_hidden {
         egui::pos2(-30000.0, -30000.0)
     } else {
@@ -120,13 +131,7 @@ fn show_picker(mut url: Option<String>, listener: Option<crate::ipc::PipeServer>
                 spawn_ipc_server(listener, cc.egui_ctx.clone(), incoming_clone, hwnd);
             }
             Box::new(PickerApp::new(
-                url.unwrap_or_default(),
-                groups,
-                config,
-                detect,
-                resident,
-                incoming,
-                hwnd,
+                request, groups, config, detect, resident, incoming, hwnd,
             ))
         }),
     )
@@ -150,13 +155,12 @@ fn spawn_ipc_server(
                 let auto = Config::load()
                     .ok()
                     .and_then(|cfg| find_auto_browser(&cfg.cached_groups, &cfg, &url).cloned());
-                if let Some(b) = auto {
-                    if b.launch(&url).is_ok() {
-                        continue;
-                    }
-                }
+                let outcome = auto.map(|b| b.launch(&url));
+                let Some(request) = pending_after_auto_launch(url, outcome) else {
+                    continue;
+                };
                 let mut queue = incoming.lock().unwrap();
-                queue.push(url);
+                queue.push(request);
                 // 非表示ウィンドウは再描画イベントを受け取れないため、
                 // egui のコマンドではなく Win32 API で直接再表示する
                 if let Some(h) = hwnd {
@@ -197,7 +201,7 @@ struct PickerApp {
 
 impl PickerApp {
     fn new(
-        url: String,
+        request: Option<PendingUrl>,
         groups: Vec<BrowserGroup>,
         config: Config,
         detect: BackgroundDetect,
@@ -206,6 +210,7 @@ impl PickerApp {
         hwnd: Option<NativeWindow>,
     ) -> Self {
         let n = groups.len();
+        let PendingUrl { url, launch_error } = request.unwrap_or_default();
         let hide_countdown = if url.is_empty() { 2 } else { 0 };
         Self {
             url,
@@ -222,7 +227,7 @@ impl PickerApp {
             resident,
             incoming,
             hwnd,
-            launch_error: None,
+            launch_error,
             hide_countdown,
         }
     }
@@ -286,14 +291,14 @@ impl eframe::App for PickerApp {
 
         if self.resident {
             // 別プロセスから受信した URL に差し替えて状態をリセット
-            let new_url = self.incoming.lock().unwrap().take_next(&self.url);
-            if let Some(url) = new_url {
-                self.url = url;
+            let request = self.incoming.lock().unwrap().take_next(&self.url);
+            if let Some(request) = request {
+                self.url = request.url;
                 self.expanded = None;
                 self.selected = None;
                 self.drag_src = None;
                 self.hide_countdown = 0; // 表示が確定したので隠す予約を取り消す
-                self.launch_error = None;
+                self.launch_error = request.launch_error;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 if let Some(h) = self.hwnd {
                     force_show(h);
@@ -601,10 +606,46 @@ impl eframe::App for PickerApp {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_failed_auto_launch_keeps_the_url_and_shows_its_error_in_the_picker() {
+        let request = pending_after_auto_launch(
+            "https://example.invalid/failed".into(),
+            Some(Err(anyhow::anyhow!("fixture launcher failed"))),
+        );
+        let picker = PickerApp::new(
+            request,
+            Vec::new(),
+            Config::default(),
+            BackgroundDetect::new(),
+            false,
+            Arc::new(Mutex::new(UrlQueue::default())),
+            None,
+        );
+        assert_eq!(picker.url, "https://example.invalid/failed");
+        assert_eq!(
+            picker.launch_error.as_deref(),
+            Some("fixture launcher failed")
+        );
+        assert_eq!(picker.hide_countdown, 0);
+    }
+
+    #[test]
+    fn successful_auto_launch_needs_no_picker_and_unmatched_urls_have_no_error() {
+        assert_eq!(
+            pending_after_auto_launch("https://example.invalid/handled".into(), Some(Ok(()))),
+            None
+        );
+        let request =
+            pending_after_auto_launch("https://example.invalid/unmatched".into(), None).unwrap();
+        assert_eq!(request.url, "https://example.invalid/unmatched");
+        assert_eq!(request.launch_error, None);
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn footer_stays_visible_with_many_handlers_and_expanded_profiles() {
         for (header_height, row_heights) in [

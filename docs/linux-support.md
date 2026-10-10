@@ -55,7 +55,7 @@ cargo build --release --locked --offline
 
 | 確認 | 結果と限界 |
 | --- | --- |
-| Rust テスト | 初回 33 本、追加修正後 40 本成功。設定更新の子プロセス試験を含む |
+| Rust テスト | 初回 33 本、表示修正後 40 本、レビュー修正後 45 本成功。設定更新の子プロセス試験を含む |
 | fmt / clippy / diff check | 成功。clippy は all-targets と -D warnings |
 | Linux release build | 成功。x86_64 ELF、初回ビルドでは実行時共有ライブラリの欠落なし |
 | Windows native build | 未実行。このホストに Windows 用標準ライブラリ・ツールチェインがない |
@@ -68,7 +68,7 @@ cargo build --release --locked --offline
 | 表示修正後の画面 | 7 件の候補、PNG、非表示別名除外、展開状態で下部操作が見えることを確認 |
 | 独立レビュー | OS 境界と修正を再確認し、新たな重大な回帰なし。Windows 実機ビルドの代わりにはしない |
 
-40 本の試験は合成 Desktop Entry、JSON プロファイル metadata、捕捉ランチャー、
+45 本の試験は合成 Desktop Entry、JSON プロファイル metadata、捕捉ランチャー、
 一時ディレクトリを使う。通常 sandbox では Unix socket 作成が禁止されるため、
 全テストは審査付きで合成データだけを使った。承認審査の拒否はなかった。
 
@@ -77,6 +77,25 @@ cargo build --release --locked --offline
 表示修正後の release バイナリ SHA-256 は
 `8044427d6727fa1a31f1fb42f920b5fad5a87792ceb7b7599a02a878eec5ee9e`。
 前者の GUI 結果を後者の全操作の成功として扱わない。
+
+## Copilot レビュー修正（2026-10-10）
+
+- [Windows の ACK 不明時の再送](https://github.com/gentianster/brows/pull/23#discussion_r4236712870):
+  未接続、ACK 成功、配送不明を `Result<bool>` で区別する。
+  Linux と Windows は未接続だけを再試行し、接続後の書き込み・ACK 失敗を呼び出し元へ返す。
+- [自動起動のエラー表示](https://github.com/gentianster/brows/pull/23#discussion_r4236712883):
+  初回 URL と常駐 IPC の両方で、自動起動失敗を URL と一緒に保持してピッカーへ渡す。
+  FIFO の次の URL に前のエラーを混ぜず、失敗した URL を手動選択で再試行できる。
+
+追加 5 試験で、配送不明時の再送なし、未接続から ACK 成功への再試行、
+初回自動起動失敗の URL とエラー保持、成功時・ルールなしの場合、キュー内のエラー対応を確認した。
+実 Unix socket の ACK 欠落試験も待機付き送信を通すように変更した。
+Linux の 45 試験、fmt、clippy、release build を確認した。
+独立した静的レビューでも、この 2 件の修正に重大な回帰・修正漏れは見つからなかった。
+Windows の共通再試行方針は試験対象だが、Win32 名前付きパイプの native build・実機試験は未実施。
+この修正後の GUI 操作は再試験していない。
+レビュー修正後の release バイナリ SHA-256 は
+`c1bfcbfdd6e559e7b6f27d35c90551959efdabe94c8dcca2852f6a9a4a826769`。
 
 ## 画面試験の範囲
 

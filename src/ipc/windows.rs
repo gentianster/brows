@@ -11,6 +11,7 @@
 //! シングルインスタンス判定は `FILE_FLAG_FIRST_PIPE_INSTANCE` で行う
 //! （2 つ目の生成は ERROR_ACCESS_DENIED で失敗する = 既に常駐がいる）。
 
+use anyhow::{anyhow, bail, Result};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
@@ -174,16 +175,19 @@ pub fn try_bind() -> Option<PipeServer> {
 }
 
 /// 常駐インスタンスへ URL を転送する。ack が返れば true
-pub fn send_open(url: &str) -> bool {
+pub fn send_open(url: &str) -> Result<bool> {
+    if !super::is_web_url(url) {
+        bail!("only complete HTTP and HTTPS URLs can be forwarded");
+    }
     send(&format!("{}{}", MSG_OPEN, url))
 }
 
 /// 常駐インスタンスを終了させる（自動更新の再起動前に呼ぶ）
 pub fn send_exit() -> bool {
-    send(MSG_EXIT)
+    send(MSG_EXIT).unwrap_or(false)
 }
 
-fn send(line: &str) -> bool {
+fn send(line: &str) -> Result<bool> {
     let name = to_wide(&pipe_name());
     unsafe {
         let mut handle = open_client(&name);
@@ -194,11 +198,19 @@ fn send(line: &str) -> bool {
             }
         }
         let Some(h) = handle else {
-            return false;
+            return Ok(false);
         };
-        let ok = write_line(h, line) && read_line(h).map(|r| r.trim() == MSG_ACK).unwrap_or(false);
+        let acknowledged =
+            write_line(h, line) && read_line(h).is_some_and(|reply| reply.trim() == MSG_ACK);
         let _ = CloseHandle(h);
-        ok
+        if acknowledged {
+            Ok(true)
+        } else {
+            // Retrying a connected request could enqueue a URL whose ACK was lost.
+            Err(anyhow!(
+                "resident URL delivery was not acknowledged; delivery may have occurred"
+            ))
+        }
     }
 }
 
@@ -262,4 +274,5 @@ unsafe fn write_line(h: HANDLE, line: &str) -> bool {
     let data = format!("{}\n", line);
     let mut written = 0u32;
     WriteFile(h, Some(data.as_bytes()), Some(&mut written), None).is_ok()
+        && written as usize == data.len()
 }

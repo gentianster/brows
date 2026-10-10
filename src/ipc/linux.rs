@@ -183,17 +183,13 @@ fn send_open_to(path: &Path, line: &str) -> Result<bool> {
     }
 }
 
-pub fn send_open_wait(url: &str) -> bool {
+pub fn send_open_wait(url: &str) -> Result<bool> {
     if !super::is_web_url(url) {
-        return false;
+        bail!("only complete HTTP and HTTPS URLs can be forwarded");
     }
-    let Ok(base) = runtime_base() else {
-        return false;
-    };
+    let base = runtime_base()?;
     let directory = base.join("brows");
-    if owned_private_directory(&directory).is_err() {
-        return false;
-    }
+    owned_private_directory(&directory)?;
     send_wait_to(&directory.join("resident.sock"), &format!("{OPEN}{url}"))
 }
 
@@ -222,18 +218,8 @@ enum SendOutcome {
     Failed,
 }
 
-fn send_wait_to(path: &Path, line: &str) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match send_attempt(path, line) {
-            SendOutcome::Delivered => return true,
-            SendOutcome::Failed => return false,
-            SendOutcome::NotReady if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            SendOutcome::NotReady => return false,
-        }
-    }
+fn send_wait_to(path: &Path, line: &str) -> Result<bool> {
+    super::retry_not_ready(|| send_open_to(path, line), Duration::from_secs(5))
 }
 
 fn send_attempt(path: &Path, line: &str) -> SendOutcome {
@@ -342,7 +328,7 @@ mod tests {
             Some("BROWS-OPEN https://example.invalid/startup")
         );
         stream.write_all(ACK.as_bytes()).unwrap();
-        assert!(client.join().unwrap());
+        assert!(client.join().unwrap().unwrap());
     }
 
     #[test]
@@ -354,7 +340,7 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             read_message(&stream).unwrap()
         });
-        assert!(send_open_to(&path, "BROWS-OPEN https://example.invalid/accepted").is_err());
+        assert!(send_wait_to(&path, "BROWS-OPEN https://example.invalid/accepted").is_err());
         assert_eq!(
             server.join().unwrap(),
             "BROWS-OPEN https://example.invalid/accepted"
