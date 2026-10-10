@@ -34,8 +34,12 @@ pub fn force_show(hwnd: isize) {
             let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
             let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
             let _ = SetWindowPos(
-                hwnd, HWND_TOPMOST,
-                (sw - w) / 2, (sh - h) / 2, 0, 0,
+                hwnd,
+                HWND_TOPMOST,
+                (sw - w) / 2,
+                (sh - h) / 2,
+                0,
+                0,
                 SWP_NOSIZE | SWP_SHOWWINDOW,
             );
         }

@@ -1,10 +1,12 @@
 //! 設定画面（既定ブラウザ登録・URL ルール・自動更新）
 
-use super::win32::center_pos;
-use super::{app_icon, setup_fonts};
+#[cfg(windows)]
+use super::window::center_pos;
+use super::{app_icon, native_options, setup_fonts};
 use crate::browser::{self, BackgroundDetect, BrowserGroup};
 use crate::config::{Config, Rule};
 use crate::registry;
+#[cfg(windows)]
 use crate::updater::{UpdateState, Updater};
 use anyhow::Result;
 use eframe::egui;
@@ -28,10 +30,15 @@ pub fn show_settings() -> Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(lang.window_title_settings)
         .with_inner_size([480.0, 520.0])
-        .with_position(center_pos(480.0, 520.0))
         .with_resizable(true);
-    if let Some(icon) = app_icon() { viewport = viewport.with_icon(icon); }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    #[cfg(windows)]
+    {
+        viewport = viewport.with_position(center_pos(480.0, 520.0));
+    }
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = native_options(viewport, cfg!(target_os = "linux"));
 
     eframe::run_native(
         "brows settings",
@@ -51,6 +58,7 @@ struct SettingsApp {
     registered: bool,
     startup: bool,
     status_msg: Option<String>,
+    #[cfg(windows)]
     updater: Updater,
     config: Config,
     new_pattern: String,
@@ -65,34 +73,108 @@ impl SettingsApp {
     fn new(groups: Vec<BrowserGroup>, config: Config, detect: BackgroundDetect) -> Self {
         let registered = registry::is_registered();
         let startup = registry::is_startup_registered();
+        #[cfg(windows)]
         let updater = Updater::from_config(&config);
-        let new_browser = groups.first()
+        let new_browser = groups
+            .first()
             .and_then(|g| g.browsers.first())
-            .map(|b| b.name.clone())
+            .map(|b| b.id())
             .unwrap_or_default();
         Self {
-            groups, registered, startup, status_msg: None, updater, config,
-            new_pattern: String::new(), new_browser,
-            icons: HashMap::new(), icons_loaded: false,
+            groups,
+            registered,
+            startup,
+            status_msg: None,
+            config,
+            #[cfg(windows)]
+            updater,
+            new_pattern: String::new(),
+            new_browser,
+            icons: HashMap::new(),
+            icons_loaded: false,
             rule_search: String::new(),
             detect,
         }
     }
 
-    /// ルール変更を保存する（他フィールドを巻き戻さないよう rules だけ書く）
-    fn save_rules(&self) {
-        let rules = self.config.rules.clone();
-        let _ = Config::update(|cfg| cfg.rules = rules);
+    fn apply_rule_change(&mut self, change: impl FnOnce(&mut Config)) -> bool {
+        match Config::update(change).and_then(|()| Config::load()) {
+            Ok(config) => {
+                self.config = config;
+                self.status_msg = None;
+                true
+            }
+            Err(error) => {
+                self.status_msg = Some(error.to_string());
+                false
+            }
+        }
     }
 
-    fn browser_names(&self) -> Vec<String> {
-        self.groups.iter().flat_map(|g| {
-            if g.browsers.len() == 1 {
-                vec![g.name.clone()]
-            } else {
-                g.browsers.iter().map(|b| b.name.clone()).collect()
-            }
-        }).collect()
+    fn append_rule(&mut self, rule: Rule) -> bool {
+        self.apply_rule_change(|config| config.rules.push(rule))
+    }
+
+    fn delete_rule(&mut self, index: usize) {
+        let Some(rule) = self.config.rules.get(index).cloned() else {
+            return;
+        };
+        let occurrence = self.config.rules[..index]
+            .iter()
+            .filter(|candidate| same_rule(candidate, &rule))
+            .count();
+        // A saved row index can point at another rule after a second settings window edits it.
+        self.apply_rule_change(|config| remove_rule(&mut config.rules, &rule, occurrence));
+    }
+
+    fn browser_choices(&self) -> Vec<(String, String)> {
+        self.groups
+            .iter()
+            .flat_map(|g| {
+                g.browsers
+                    .iter()
+                    .map(|browser| (browser.id(), browser.name.clone()))
+            })
+            .collect()
+    }
+
+    fn browser_label(&self, id: &str) -> String {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.browsers)
+            .find(|browser| browser.id() == id || browser.name == id)
+            .map(|browser| browser.name.clone())
+            .unwrap_or_else(|| id.to_owned())
+    }
+
+    fn registration_failed(&mut self, ctx: &egui::Context, argument: &str, error: anyhow::Error) {
+        #[cfg(windows)]
+        {
+            let _ = error;
+            registry::elevate(argument);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = (ctx, argument);
+            self.status_msg = Some(error.to_string());
+        }
+    }
+}
+
+fn same_rule(left: &Rule, right: &Rule) -> bool {
+    left.pattern == right.pattern && left.browser == right.browser
+}
+
+fn remove_rule(rules: &mut Vec<Rule>, rule: &Rule, occurrence: usize) {
+    let index = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| same_rule(candidate, rule))
+        .nth(occurrence)
+        .map(|(index, _)| index);
+    if let Some(index) = index {
+        rules.remove(index);
     }
 }
 
@@ -106,8 +188,14 @@ fn draw_x_button(ui: &mut egui::Ui) -> egui::Response {
     let c = rect.center();
     let d = 4.0;
     let stroke = egui::Stroke::new(1.5, color);
-    ui.painter().line_segment([egui::pos2(c.x - d, c.y - d), egui::pos2(c.x + d, c.y + d)], stroke);
-    ui.painter().line_segment([egui::pos2(c.x + d, c.y - d), egui::pos2(c.x - d, c.y + d)], stroke);
+    ui.painter().line_segment(
+        [egui::pos2(c.x - d, c.y - d), egui::pos2(c.x + d, c.y + d)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [egui::pos2(c.x + d, c.y - d), egui::pos2(c.x - d, c.y + d)],
+        stroke,
+    );
     resp
 }
 
@@ -127,9 +215,10 @@ impl eframe::App for SettingsApp {
         if !self.icons_loaded {
             self.icons_loaded = true;
             for g in &self.groups {
-                if let Some(img) = crate::icon::load(&g.exe_path) {
+                if let Some(img) = crate::icon::load_browser(g) {
                     let tex = ctx.load_texture(&g.name, img, egui::TextureOptions::LINEAR);
                     for b in &g.browsers {
+                        self.icons.insert(b.id(), tex.clone());
                         self.icons.insert(b.name.clone(), tex.clone());
                     }
                     self.icons.insert(g.name.clone(), tex);
@@ -141,7 +230,11 @@ impl eframe::App for SettingsApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.heading("brows");
-                ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak().small());
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .weak()
+                        .small(),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(lang.subtitle).weak().small());
                 });
@@ -152,75 +245,110 @@ impl eframe::App for SettingsApp {
 
             ui.horizontal(|ui| {
                 let (icon, label) = if self.registered {
-                    ("✔", egui::RichText::new(lang.registered).color(egui::Color32::from_rgb(100, 200, 100)).small())
+                    (
+                        "✔",
+                        egui::RichText::new(lang.registered)
+                            .color(egui::Color32::from_rgb(100, 200, 100))
+                            .small(),
+                    )
                 } else {
-                    ("✖", egui::RichText::new(lang.not_registered).color(egui::Color32::from_rgb(200, 100, 100)).small())
+                    (
+                        "✖",
+                        egui::RichText::new(lang.not_registered)
+                            .color(egui::Color32::from_rgb(200, 100, 100))
+                            .small(),
+                    )
                 };
                 ui.label(icon);
                 ui.label(label);
                 ui.add_space(4.0);
-                if ui.add_enabled(!self.registered, egui::Button::new(lang.btn_register).small()).clicked() {
+                if ui
+                    .add_enabled(
+                        !self.registered,
+                        egui::Button::new(lang.btn_register).small(),
+                    )
+                    .clicked()
+                {
                     match registry::register() {
                         Ok(_) => {
                             self.registered = true;
                             self.status_msg = Some(lang.register_success_hint.into());
                         }
-                        Err(_) => {
-                            registry::elevate("--register");
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+                        Err(error) => self.registration_failed(ctx, "--register", error),
                     }
                 }
-                if ui.add_enabled(self.registered, egui::Button::new(lang.btn_unregister).small()).clicked() {
+                if ui
+                    .add_enabled(
+                        self.registered,
+                        egui::Button::new(lang.btn_unregister).small(),
+                    )
+                    .clicked()
+                {
                     match registry::unregister() {
                         Ok(_) => {
                             self.registered = false;
                             self.status_msg = Some(lang.unregister_success.into());
                         }
-                        Err(_) => {
-                            registry::elevate("--unregister");
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+                        Err(error) => self.registration_failed(ctx, "--unregister", error),
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let update_state = self.updater.state.lock().unwrap().clone();
-                    match &update_state {
-                        UpdateState::UpToDate => {
-                            if ui.small_button(lang.btn_check_update).clicked() {
-                                self.updater.check_now();
+                    #[cfg(windows)]
+                    {
+                        let update_state = self.updater.state.lock().unwrap().clone();
+                        match &update_state {
+                            UpdateState::UpToDate => {
+                                if ui.small_button(lang.btn_check_update).clicked() {
+                                    self.updater.check_now();
+                                }
+                                ui.label(egui::RichText::new(lang.up_to_date).weak().small());
                             }
-                            ui.label(egui::RichText::new(lang.up_to_date).weak().small());
-                        }
-                        UpdateState::Checking => {
-                            ui.label(egui::RichText::new(lang.checking).weak().small());
-                            ctx.request_repaint();
-                        }
-                        UpdateState::Available(tag) => {
-                            if ui.small_button(lang.btn_download).clicked() {
-                                self.updater.download_and_restart();
+                            UpdateState::Checking => {
+                                ui.label(egui::RichText::new(lang.checking).weak().small());
+                                ctx.request_repaint();
                             }
-                            ui.label(egui::RichText::new(format!("{} {}", tag, lang.update_suffix))
-                                .color(egui::Color32::from_rgb(80, 180, 80)).small());
-                        }
-                        UpdateState::Downloading => {
-                            ui.label(egui::RichText::new(lang.downloading).weak().small());
-                            ctx.request_repaint();
-                        }
-                        UpdateState::ReadyToRestart => {
-                            if ui.small_button(lang.btn_restart).clicked() { Updater::restart(); }
-                            ui.label(egui::RichText::new(lang.dl_complete)
-                                .color(egui::Color32::from_rgb(80, 180, 80)).small());
-                        }
-                        UpdateState::Error(e) => {
-                            if ui.small_button(lang.btn_check_update).clicked() {
-                                self.updater.check_now();
+                            UpdateState::Available(tag) => {
+                                if ui.small_button(lang.btn_download).clicked() {
+                                    self.updater.download_and_restart();
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("{} {}", tag, lang.update_suffix))
+                                        .color(egui::Color32::from_rgb(80, 180, 80))
+                                        .small(),
+                                );
                             }
-                            ui.label(egui::RichText::new(format!("{}{}", lang.update_error_prefix, e))
-                                .color(egui::Color32::from_rgb(200, 80, 80)).small());
+                            UpdateState::Downloading => {
+                                ui.label(egui::RichText::new(lang.downloading).weak().small());
+                                ctx.request_repaint();
+                            }
+                            UpdateState::ReadyToRestart => {
+                                if ui.small_button(lang.btn_restart).clicked() {
+                                    Updater::restart();
+                                }
+                                ui.label(
+                                    egui::RichText::new(lang.dl_complete)
+                                        .color(egui::Color32::from_rgb(80, 180, 80))
+                                        .small(),
+                                );
+                            }
+                            UpdateState::Error(e) => {
+                                if ui.small_button(lang.btn_check_update).clicked() {
+                                    self.updater.check_now();
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}{}",
+                                        lang.update_error_prefix, e
+                                    ))
+                                    .color(egui::Color32::from_rgb(200, 80, 80))
+                                    .small(),
+                                );
+                            }
                         }
                     }
+                    #[cfg(target_os = "linux")]
+                    ui.label(egui::RichText::new(lang.update_disabled).weak().small());
                 });
             });
 
@@ -231,19 +359,28 @@ impl eframe::App for SettingsApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let mut startup = self.startup;
-                if ui.checkbox(&mut startup, egui::RichText::new(lang.startup_checkbox).small()).changed() {
+                if ui
+                    .checkbox(
+                        &mut startup,
+                        egui::RichText::new(lang.startup_checkbox).small(),
+                    )
+                    .changed()
+                {
                     let result = if startup {
                         registry::register_startup()
                     } else {
                         registry::unregister_startup()
                     };
-                    if result.is_ok() {
-                        self.startup = startup;
-                        if startup {
-                            // 次のログオンを待たず、いますぐ常駐を開始する
-                            // （既に常駐がいれば即終了するので無害）
-                            crate::util::spawn_self_detached(&["--resident"]);
+                    match result {
+                        Ok(()) => {
+                            self.startup = startup;
+                            if startup {
+                                // 次のログオンを待たず、いますぐ常駐を開始する
+                                // （既に常駐がいれば即終了するので無害）
+                                crate::util::spawn_self_detached(&["--resident"]);
+                            }
                         }
+                        Err(error) => self.status_msg = Some(error.to_string()),
                     }
                 }
                 ui.label(egui::RichText::new(lang.startup_hint).weak().small());
@@ -255,28 +392,31 @@ impl eframe::App for SettingsApp {
             ui.horizontal(|ui| {
                 ui.label(lang.section_url_rules);
                 if ui.small_button(lang.btn_open_config).clicked() {
-                    use std::os::windows::process::CommandExt;
                     let path = crate::config::config_path();
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                    let result = (|| -> anyhow::Result<()> {
+                        if !path.exists() {
+                            Config::update(|_| {})?;
+                        }
+                        crate::util::open_file(&path)?;
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        self.status_msg = Some(error.to_string());
                     }
-                    if !path.exists() { let _ = std::fs::write(&path, ""); }
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/c", "start", "", &path.to_string_lossy()])
-                        .creation_flags(crate::util::CREATE_NO_WINDOW)
-                        .spawn();
                 }
             });
             ui.add_space(4.0);
 
-            let browser_names = self.browser_names();
+            let browser_choices = self.browser_choices();
             let mut delete_idx: Option<usize> = None;
             if self.config.rules.is_empty() {
                 ui.label(egui::RichText::new(lang.no_rules).weak().small());
             } else {
-                ui.add(egui::TextEdit::singleline(&mut self.rule_search)
-                    .hint_text(lang.search_hint)
-                    .desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.rule_search)
+                        .hint_text(lang.search_hint)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.add_space(2.0);
                 let q = self.rule_search.to_lowercase();
                 egui::ScrollArea::vertical()
@@ -284,66 +424,89 @@ impl eframe::App for SettingsApp {
                     .max_height(120.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        for (i, rule) in self.config.rules.iter().enumerate()
-                            .filter(|(_, r)| q.is_empty()
+                        for (i, rule) in self.config.rules.iter().enumerate().filter(|(_, r)| {
+                            q.is_empty()
                                 || r.pattern.to_lowercase().contains(&q)
-                                || r.browser.to_lowercase().contains(&q))
-                        {
+                                || self.browser_label(&r.browser).to_lowercase().contains(&q)
+                        }) {
                             ui.horizontal(|ui| {
                                 if draw_x_button(ui).clicked() {
                                     delete_idx = Some(i);
                                 }
-                                let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
                                 if let Some(tex) = self.icons.get(&rule.browser) {
-                                    ui.painter().image(tex.id(), icon_rect,
-                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                        egui::Color32::WHITE);
+                                    ui.painter().image(
+                                        tex.id(),
+                                        icon_rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
                                 }
                                 ui.label(egui::RichText::new(&rule.pattern).monospace());
                                 ui.label(egui::RichText::new("→").weak());
-                                ui.label(&rule.browser);
+                                ui.label(self.browser_label(&rule.browser));
                             });
                         }
                     });
             }
             if let Some(i) = delete_idx {
-                self.config.rules.remove(i);
-                self.save_rules();
+                self.delete_rule(i);
             }
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.new_pattern)
-                    .hint_text(lang.pattern_hint)
-                    .desired_width(160.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_pattern)
+                        .hint_text(lang.pattern_hint)
+                        .desired_width(160.0),
+                );
                 egui::ComboBox::from_id_source("rule_browser")
-                    .selected_text(&self.new_browser)
+                    .selected_text(self.browser_label(&self.new_browser))
                     .width(130.0)
                     .show_ui(ui, |ui| {
-                        for name in &browser_names {
-                            let is_selected = self.new_browser == *name;
+                        for (id, name) in &browser_choices {
+                            let is_selected = self.new_browser == *id;
                             let resp = ui.horizontal(|ui| {
-                                let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                                if let Some(tex) = self.icons.get(name) {
-                                    ui.painter().image(tex.id(), icon_rect,
-                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                        egui::Color32::WHITE);
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
+                                );
+                                if let Some(tex) = self.icons.get(id) {
+                                    ui.painter().image(
+                                        tex.id(),
+                                        icon_rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
                                 }
                                 ui.selectable_label(is_selected, name.as_str())
                             });
                             if resp.inner.clicked() {
-                                self.new_browser = name.clone();
+                                self.new_browser = id.clone();
                             }
                         }
                     });
                 let can_add = !self.new_pattern.is_empty() && !self.new_browser.is_empty();
-                if ui.add_enabled(can_add, egui::Button::new(lang.btn_add)).clicked() {
-                    self.config.rules.push(Rule {
+                if ui
+                    .add_enabled(can_add, egui::Button::new(lang.btn_add))
+                    .clicked()
+                {
+                    let rule = Rule {
                         pattern: self.new_pattern.clone(),
                         browser: self.new_browser.clone(),
-                    });
-                    self.save_rules();
-                    self.new_pattern.clear();
+                    };
+                    if self.append_rule(rule) {
+                        self.new_pattern.clear();
+                    }
                 }
             });
 
@@ -364,5 +527,52 @@ impl eframe::App for SettingsApp {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_rule;
+    use crate::config::Rule;
+
+    fn rule(pattern: &str, browser: &str) -> Rule {
+        Rule {
+            pattern: pattern.into(),
+            browser: browser.into(),
+        }
+    }
+
+    #[test]
+    fn deleting_a_stale_row_keeps_other_rules_and_new_additions() {
+        let target = rule("example.invalid", "target.desktop");
+        let mut latest = vec![
+            rule("inserted.invalid", "inserted.desktop"),
+            target.clone(),
+            rule("added.invalid", "added.desktop"),
+        ];
+        remove_rule(&mut latest, &target, 0);
+        assert_eq!(
+            latest
+                .iter()
+                .map(|rule| rule.pattern.as_str())
+                .collect::<Vec<_>>(),
+            ["inserted.invalid", "added.invalid"]
+        );
+        remove_rule(&mut latest, &target, 0);
+        assert_eq!(latest.len(), 2);
+    }
+
+    #[test]
+    fn deleting_one_duplicate_preserves_the_other_and_another_browser() {
+        let target = rule("example.invalid", "target.desktop");
+        let mut latest = vec![
+            target.clone(),
+            rule("example.invalid", "other.desktop"),
+            target.clone(),
+        ];
+        remove_rule(&mut latest, &target, 1);
+        assert_eq!(latest.len(), 2);
+        assert_eq!(latest[0].browser, "target.desktop");
+        assert_eq!(latest[1].browser, "other.desktop");
     }
 }

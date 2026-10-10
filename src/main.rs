@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod browser;
 mod config;
@@ -8,6 +8,7 @@ mod lang;
 mod registry;
 mod ui;
 mod updater;
+mod url_queue;
 mod util;
 
 use anyhow::Result;
@@ -29,18 +30,24 @@ fn main() -> Result<()> {
             // スタートアップ登録から呼ばれる。ウィンドウを作らず（非表示のまま）常駐する
             ui::run_resident()?;
         }
+        Some("--quit") => {
+            if !ipc::send_exit() {
+                anyhow::bail!("resident picker could not acknowledge the exit request");
+            }
+        }
         Some("--list") => {
             let browsers = browser::detect()?;
             for b in &browsers {
                 println!("{} : {}", b.name, b.exe_path);
             }
         }
-        Some(url) if url.starts_with("http") => {
+        Some(url) if ipc::is_web_url(url) && args.len() == 2 => {
             // 更新チェックは常駐側で行う（転送だけで即終了するプロセスで
             // 走らせるとチェック完了前に殺されてしまうため）
             ui::open_url(url.to_string())?;
         }
-        _ => {
+        Some(_) => anyhow::bail!("usage: brows [http(s)://URL | --resident | --quit | --list | --register | --unregister]"),
+        None => {
             // どの起動経路でもトレイ常駐を確保する（--resident は冪等：既に常駐が
             // いれば即終了する）。ただし管理者権限のときは常駐を作らない
             // （昇格した常駐は通常権限のリンク起動からパイプ越しに扱いにくく、
